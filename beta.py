@@ -435,6 +435,7 @@ class Satellite:
         self.history_M_atm = []
         self.history_R_out = []
         self.history_R_B = []
+        self.history_P_surf = []
 # シミュレーションの初期設定
 t_year = 0.0             # イオが捕獲される時間からスタート
 dt_year = 1000.0            # タイムステップ
@@ -523,6 +524,16 @@ while t_year <= t_max_year:
         M_atm, R_out, R_B = calculate_atmosphere_mass(sat.M_s, sat.R_s, M_cp_kg, sat.r_orb, c_s, rho_g)
         St_s = calculate_satellite_stokes_number(C_D, sat.rho_s, sat.R_s, rho_g, eta, v_K, Omega_K)
         
+        # ★ 追加: 表面大気圧の計算 (P_surf = rho(R_s) * c_s^2)
+        if R_out > sat.R_s:
+            # 表面での指数部を計算
+            exponent = (G * sat.M_s / c_s**2) * ((1.0 / sat.R_s) - (1.0 / R_out))
+            exponent = min(exponent, 700) # オーバーフロー防止
+            rho_surf = rho_g * np.exp(exponent)
+            P_surf_cgs = rho_surf * c_s**2  # 単位は dyn/cm^2
+        else:
+            P_surf_cgs = 0.0 # ボンディ半径が衛星半径より小さい場合は大気なし
+            
         
         # 2. 画像の数式に基づく動粘性係数 ν と 熱拡散係数 χ
         nu = alpha * c_s * H_g
@@ -565,6 +576,7 @@ while t_year <= t_max_year:
         sat.next_M_atm = M_atm
         sat.next_R_out = R_out
         sat.next_R_B = R_B
+        sat.next_P_surf = P_surf_cgs
 
     # --- ② 軌道共鳴チェック（内側の衛星から外側へ順番に判定） ---
     active_sats.sort(key=lambda s: s.r_orb)
@@ -604,6 +616,7 @@ while t_year <= t_max_year:
         # --- 追加: 大気関連データの記録 ---
         sat.history_M_atm.append(sat.next_M_atm)
         sat.history_R_out.append(sat.next_R_out / 100000.0)  # km単位に変換
+        sat.history_P_surf.append(sat.next_P_surf / 10.0)    # ★ 追加: dyn/cm^2 から Pa に変換
     t_year += dt_year
 
 # ==========================================
@@ -943,4 +956,30 @@ plt.xticks(ticks_positions, ticks_labels, fontsize=12)
 plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
 plt.tight_layout()
 plt.savefig("atmosphere_mass_evolution.png")
+plt.close()
+
+# --- 追加: 衛星の地表面気圧 (P_surf) の進化 ---
+plt.figure(figsize=(10, 6))
+for i, sat in enumerate(satellites):
+    if len(sat.history_t) > 0:
+        # 気圧 (Pa) をプロット
+        plt.plot(sat.history_t, sat.history_P_surf, color=colors[i], linestyle='-', linewidth=2, label=f"{sat.name}")
+
+plt.ylabel('Surface Pressure (Pa)', fontsize=14)
+plt.xlabel('Time (Years)', fontsize=14)
+plt.title('衛星の地表面気圧の進化', fontsize=16)
+
+# 気圧の変化が大きいため対数スケールに設定
+plt.yscale('log')
+plt.xscale('log')
+
+# 目盛りの設定 (既存のticks_positions, ticks_labelsを利用)
+plt.xticks(ticks_positions, ticks_labels, fontsize=12)
+
+# 地球の1気圧 (約101325 Pa) に参考線を引く
+plt.axhline(y=101325, color='gray', linestyle='--', linewidth=1, label='1 atm (Earth)')
+
+plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
+plt.tight_layout()
+plt.savefig("surface_pressure_evolution.png")
 plt.close()
