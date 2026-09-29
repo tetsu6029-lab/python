@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import math
+import scipy.integrate as integrate
 from scipy.optimize import newton
 
 plt.rcParams['font.family'] = 'IPAexGothic'
@@ -58,15 +59,15 @@ def calculate_mdot_g(t, t_gap):
 
 # 木星の光度 L_cp [erg/s] を時間発展で計算する関数
 def calculate_L_cp(t, t_gap):
-    t_dep = 3.0e6
-    L_gap = 3.0e-3 * L_sun      # ギャップ形成時の光度
-    L_end = 1.0e-5 * L_sun      # ガス枯渇時の光度
+    t_end = 3.0e7
+    L_gap = 1.5e-5 * L_sun      # ギャップ形成時の光度
+    L_end = 3.0e-7 * L_sun      # 計算終了時(t = 30Myr)の光度
     
     if t <= t_gap:
         return L_gap
     elif t >= t_gap:
         # 冷却モデルに合わせて対数スケール（指数関数的）で滑らかに減少させる
-        log_L = math.log10(L_gap) + (t - t_gap) / (t_dep - t_gap) * (math.log10(L_end) - math.log10(L_gap))
+        log_L = math.log10(L_gap) + (t - t_gap) / (t_end - t_gap) * (math.log10(L_end) - math.log10(L_gap))
         return 10**log_L
     
 
@@ -438,6 +439,35 @@ def calculate_P_eff(mu_s, delta_v, v_K, st_p, eta, h_p):
     P_eff = (term1_inner**-2 + term2_inner**-2)**-0.5
     return P_eff
 
+# 衛星が保持する大気質量 (M_atm) を計算する関数
+def calculate_atmosphere_mass(M_s, R_s, M_cp_kg, r_orb, c_s, rho_g):
+    # ボンディ半径とヒル半径の計算
+    R_B = (G * M_s) / (c_s**2)
+    R_H = r_orb * (M_s / (3.0 * M_cp_kg))**(1/3)
+
+    # 大気の上端は小さい方を採用
+    R_out = min(R_B, R_H)
+
+    # 衛星半径がR_outを上回っている場合は大気は存在できない
+    if R_out <= R_s:
+        return 0.0, R_out, R_B
+
+    def density_profile(r):
+        # 静水圧平衡による指数部の計算
+        exponent = (G * M_s / c_s**2) * ((1.0 / r) - (1.0 / R_out))
+        # オーバーフロー防止
+        if exponent > 700:
+            exponent = 700
+        return rho_g * np.exp(exponent)
+
+    def integrand(r):
+        return 4.0 * np.pi * (r**2) * density_profile(r)
+
+    # R_s から R_out まで数値積分
+    mass_atm, _ = integrate.quad(integrand, R_s, R_out)
+
+    return mass_atm, R_out, R_B
+
 # ニュートン法による厳密解
 def calculate_Ts_strict(rho_s, C_p, dRs_dt, M_dot_s, u_i, R_s, T_d):
     heating_flux = (M_dot_s * u_i**2) / (8 * np.pi * R_s**2)
@@ -468,6 +498,13 @@ class Satellite:
         self.history_t, self.history_Rs, self.history_r, self.history_Ts = [], [], [], []
         self.history_b_t1, self.history_T_d, self.history_P_eff, self.history_st_p = [], [], [], []
         self.history_u_i, self.history_q, self.history_P = [], [], []
+        self.history_M_cp , self.history_v_ad ,self.history_t_ad = [], [], []
+        self.history_R_B = []  # ★ 追加: ボンディ半径の履歴
+        self.history_M_atm = []
+        self.history_R_out = []
+        self.history_R_B = []
+        self.history_P_surf = []
+
 # シミュレーションの初期設定
 t_year = 1.0e6             # イオが捕獲される時間からスタート
 dt_year = 1000.0            # タイムステップ
@@ -483,6 +520,8 @@ fixed_history_T_sun = []
 
 history_disk_mass_t = []
 history_disk_mass = []
+history_M_cp = []
+history_M_dot_g = []
 
 # 4つの衛星（シード）を定義（Shibaike et al. 2019 に基づく時間差）
 satellites = [
@@ -506,6 +545,8 @@ while t_year <= t_max_year:
     current_disk_mass = calculate_disk_mass(M_cp_kg, M_dot_g_kg_s, alpha, r_gg, L_cp)
     history_disk_mass_t.append(t_year)
     history_disk_mass.append(current_disk_mass)
+    history_M_cp.append(M_cp_MJ)
+    history_M_dot_g.append(M_dot_g_kg_s)
 
 # 指定した固定軌道における各温度成分を計算して記録
     p_fix, q_fix = calculate_p_q(M_cp_kg, M_dot_g_kg_s, target_fixed_r, alpha, r_gg, L_cp)
@@ -573,7 +614,22 @@ while t_year <= t_max_year:
         rho_g = Sigma_g / (np.sqrt(2.0 * np.pi) * H_g)
         P =rho_g * c_s**2
         St_s = calculate_satellite_stokes_number(C_D, sat.rho_s, sat.R_s, rho_g, eta, v_K, Omega_K)
+
+ # --- 追加: 大気質量と半径の計算 ---
+        M_atm, R_out, R_B = calculate_atmosphere_mass(sat.M_s, sat.R_s, M_cp_kg, sat.r_orb, c_s, rho_g)
+        St_s = calculate_satellite_stokes_number(C_D, sat.rho_s, sat.R_s, rho_g, eta, v_K, Omega_K)
         
+        # ★ 追加: 表面大気圧の計算 (P_surf = rho(R_s) * c_s^2)
+        if R_out > sat.R_s:
+            # 表面での指数部を計算
+            exponent = (G * sat.M_s / c_s**2) * ((1.0 / sat.R_s) - (1.0 / R_out))
+            exponent = min(exponent, 700) # オーバーフロー防止
+            rho_surf = rho_g * np.exp(exponent)
+            P_surf_cgs = rho_surf * c_s**2  # 単位は dyn/cm^2
+        else:
+            P_surf_cgs = 0.0 # ボンディ半径が衛星半径より小さい場合は大気なし
+        
+
         
         # 2. 画像の数式に基づく動粘性係数 ν と 熱拡散係数 χ
         nu = alpha * c_s * H_g
@@ -590,7 +646,8 @@ while t_year <= t_max_year:
         
         # 5. 従来の固定値(b_t1)の代わりに beta を使って v_t1 を計算
         v_t1 = calculate_v_t1(b_t1, sat.M_s, M_cp_kg, Sigma_g, sat.r_orb, v_K, c_s)
-        
+        v_ad = calculate_v_ad(st_p, eta, v_K)
+
         # 最終的な移動速度
         v_mig = calculate_v_ad(St_s, eta, v_K) + v_t1
         u_i = calculate_u_i(G, sat.M_s, sat.R_s, delta_v, st_p, Omega_K)
@@ -608,6 +665,15 @@ while t_year <= t_max_year:
         sat.next_u_i = u_i
         sat.next_q = q
         sat.next_P = P
+        sat.next_v_ad = v_ad
+        sec_per_year = 365.25 * 24 * 3600
+        sat.next_t_ad = abs(sat.r_orb / v_ad) / sec_per_year
+        # ★ 追加: ボンディ半径の計算
+        sat.next_R_B = (G * sat.M_s) / (c_s**2)
+        sat.next_M_atm = M_atm
+        sat.next_R_out = R_out
+        sat.next_R_B = R_B
+        sat.next_P_surf = P_surf_cgs
 
     # --- ② 軌道共鳴チェック（内側の衛星から外側へ順番に判定） ---
     active_sats.sort(key=lambda s: s.r_orb)
@@ -641,6 +707,13 @@ while t_year <= t_max_year:
         sat.history_u_i.append(sat.next_u_i)
         sat.history_q.append(sat.next_q)
         sat.history_P.append(sat.next_P)
+        sat.history_v_ad.append(sat.next_v_ad)
+        sat.history_t_ad.append(sat.next_t_ad)
+        sat.history_R_B.append(sat.next_R_B / 100000.0)
+        # --- 追加: 大気関連データの記録 ---
+        sat.history_M_atm.append(sat.next_M_atm)
+        sat.history_R_out.append(sat.next_R_out / 100000.0)  # km単位に変換
+        sat.history_P_surf.append(sat.next_P_surf / 10.0)    # ★ 追加: dyn/cm^2 から Pa に変換
     t_year += dt_year
 
 # ==========================================
@@ -844,6 +917,181 @@ plt.title('周木星円盤のガス総質量の時間進化')
 plt.xscale('log')
 plt.yscale('log')  # 質量も大きく変化するため対数スケールが見やすいです
 plt.tight_layout()
-plt.savefig("disk_mass_evolution.png")
+plt.savefig("disk_mass_evolution_central_flux.png")
 plt.close()
 
+# --- 追加: 円盤ガス流入率の推移 ---
+plt.figure(figsize=(8, 5))
+# kg/s で記録されているものを、M_J/yr に変換したリストを作成
+# (1年は約 3.154e7 秒、木星質量は M_J グラム)
+
+sec_per_year = 365.25 * 24 * 3600 *1.0e6
+M_dot_g_MJ_yr = [(val * sec_per_year) / M_J for val in history_M_dot_g]
+
+plt.plot(history_disk_mass_t, M_dot_g_MJ_yr, color='tab:purple', linewidth=2)
+plt.ylabel('M_dot_g($M_J$/year)', fontsize=14)
+plt.xlabel('Time (Myr)', fontsize=14)
+plt.title('gas flux evolution', fontsize=16)
+# ★ 追加: X軸の目盛り（位置とテキスト）を明示的に指定する
+ticks_positions = [1e6, 3e6, 1e7, 3e7]
+ticks_labels = ['1', '3', '10', '30']
+plt.xticks(ticks_positions, ticks_labels, fontsize=12)
+plt.tight_layout()
+plt.savefig("disk_gas_flux_central_flux.png")
+plt.close()
+
+# --- 追加: 木星質量の推移 ---
+plt.figure(figsize=(8, 5))
+plt.plot(history_disk_mass_t, history_M_cp, color='tab:purple', linewidth=2)
+plt.ylabel('Jupiter Mass ($M_J$)', fontsize=14)
+plt.xlabel('Time (Myr)', fontsize=14)
+plt.title('Jupiter Mass evolution', fontsize=16)
+# ★ 追加: X軸の目盛り（位置とテキスト）を明示的に指定する
+ticks_positions = [1e6, 3e6, 1e7, 3e7]
+ticks_labels = ['1', '3', '10', '30']
+plt.xticks(ticks_positions, ticks_labels, fontsize=12)
+plt.tight_layout()
+plt.savefig("jupiter_mass_evolution_central_flux.png")
+plt.close()
+"""
+# --- 追加: 円盤内の軌道半径に対するぺブル移動時間とストークス数 (空間分布) ---
+fig, ax1 = plt.subplots(figsize=(8, 5))
+ax2 = ax1.twinx()  # 右側のY軸（St_p用）を作成
+
+snapshot_times = [1.0e6, 2.0e6]
+colors_snap = ['tab:blue', 'tab:orange']
+
+# 1 R_J から 50 R_J まで
+r_array_RJ = np.logspace(0, np.log10(50), 100)
+r_array = r_array_RJ * R_J
+
+for t_snap, col in zip(snapshot_times, colors_snap):
+    M_cp_MJ = calculate_M_cp(t_snap, t_gap)
+    M_cp_kg = M_cp_MJ * M_J
+    M_dot_g_kg_s = calculate_mdot_g(t_snap, t_gap) * M_J / (365.25 * 24 * 3600)
+    M_dot_p_base = x * M_dot_g_kg_s
+
+
+    t_ad_list = []
+    st_p_list = []
+    valid_r_RJ = []
+
+    for r_val in r_array:
+        p, q = calculate_p_q(M_cp_kg, M_dot_g_kg_s, r_val, alpha, r_gg L_cp)
+        T_d, Sigma_g = calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, r_val, alpha, r_gg, L_cp, q_guess=q)
+
+        if np.isnan(T_d):
+            continue
+
+        local_M_dot_p = M_dot_p_base * 0.5 if T_d >= 160.0 else M_dot_p_base
+        eta, _ = calculate_eta(M_cp_kg, M_dot_g_kg_s, r_val, alpha, r_gg)
+        st_p = calculate_st_p(p, q, local_M_dot_p, M_dot_g_kg_s, alpha, T_d, M_cp_kg, r_val, eta, frag_limit=False)
+        v_K = np.sqrt(G * M_cp_kg / r_val)
+        v_r_p = -2.0 * (st_p / (st_p**2 + 1.0)) * eta * v_K
+
+        if v_r_p == 0:
+            continue
+
+        t_ad_sec = abs(r_val / v_r_p)
+        t_ad_yr = t_ad_sec / (365.25 * 24 * 3600)
+
+        t_ad_list.append(t_ad_yr)
+        st_p_list.append(st_p)
+        valid_r_RJ.append(r_val / R_J)
+
+    ax1.plot(valid_r_RJ, t_ad_list, label=f't_ad ({t_snap/1e6:.1f} Myr)', color=col, linewidth=2, linestyle='-')
+    ax2.plot(valid_r_RJ, st_p_list, label=f'St_p ({t_snap/1e6:.1f} Myr)', color=col, linewidth=2, linestyle=':')
+
+# ★ 修正: 赤点線（plt.axhline）を削除しました
+
+ax1.set_ylabel('Pebble Migration Timescale (Years)', fontsize=14)
+ax2.set_ylabel('St_p', fontsize=14)
+ax1.set_xlabel('Orbital Radius ($R_J$)', fontsize=14)
+plt.title('Pebble Migration Timescale', fontsize=16)
+
+ax1.set_xscale('log')
+ax1.set_yscale('log')
+ax2.set_yscale('log')
+
+ax1.set_xticks([1, 2, 5, 10, 20, 50])
+ax1.set_xticklabels(['1', '2', '5', '10', '20', '50'], fontsize=12)
+
+lines_1, labels_1 = ax1.get_legend_handles_labels()
+lines_2, labels_2 = ax2.get_legend_handles_labels()
+ax1.legend(lines_1 + lines_2, labels_1 + labels_2, fontsize=10, loc='lower right')
+
+plt.tight_layout()
+plt.savefig("pebble_migration_time_vs_r_central_flux.png")
+plt.close()
+"""
+# --- 追加: ボンディ半径と衛星半径の比較 (大気獲得判定) ---
+plt.figure(figsize=(10, 6))
+for i, sat in enumerate(satellites):
+    if len(sat.history_t) > 0:
+        # 衛星半径 R_s を実線でプロット
+        plt.plot(sat.history_t, sat.history_Rs, color=colors[i], linestyle='-', linewidth=2, label=f"{sat.name} (R_s)")
+        # ボンディ半径 R_B を点線でプロット
+        plt.plot(sat.history_t, sat.history_R_B, color=colors[i], linestyle=':', linewidth=2, label=f"{sat.name} (R_B)")
+
+plt.ylabel('Radius (km)', fontsize=14)
+plt.xlabel('Time (Years)', fontsize=14)
+plt.title('ボンディ半径と衛星半径の進化 (大気獲得条件: R_B > R_s)', fontsize=16)
+
+# 距離の差が大きいため対数スケールに設定
+plt.yscale('log')
+plt.xscale('log')
+
+# X軸の目盛りを見やすく整理
+ticks_positions = [1e6, 3e6, 1e7, 3e7]
+ticks_labels = ['1', '3', '10', '30']
+plt.xticks(ticks_positions, ticks_labels, fontsize=12)
+
+# 凡例を外側に配置
+plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
+plt.tight_layout()
+plt.savefig("radius_comparison_atmosphere_central_flux.png")
+plt.close()
+
+# --- 追加: 衛星の大気質量 (M_atm) と質量比の進化 ---
+plt.figure(figsize=(10, 6))
+for i, sat in enumerate(satellites):
+    if len(sat.history_t) > 0:
+        # 大気質量の絶対値 (g) をプロット
+        plt.plot(sat.history_t, sat.history_M_atm, color=colors[i], linestyle='-', linewidth=2, label=f"{sat.name} (Mass [g])")
+
+plt.ylabel('Atmosphere Mass (g)', fontsize=14)
+plt.xlabel('Time (Years)', fontsize=14)
+plt.title('衛星が獲得した大気質量の進化', fontsize=16)
+plt.yscale('log')
+plt.xscale('log')
+plt.xticks(ticks_positions, ticks_labels, fontsize=12)
+plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
+plt.tight_layout()
+plt.savefig("atmosphere_mass_evolution_central_flux.png")
+plt.close()
+
+# --- 追加: 衛星の地表面気圧 (P_surf) の進化 ---
+plt.figure(figsize=(10, 6))
+for i, sat in enumerate(satellites):
+    if len(sat.history_t) > 0:
+        # 気圧 (Pa) をプロット
+        plt.plot(sat.history_t, sat.history_P_surf, color=colors[i], linestyle='-', linewidth=2, label=f"{sat.name}")
+
+plt.ylabel('Surface Pressure (Pa)', fontsize=14)
+plt.xlabel('Time (Years)', fontsize=14)
+plt.title('衛星の地表面気圧の進化', fontsize=16)
+
+# 気圧の変化が大きいため対数スケールに設定
+plt.yscale('log')
+plt.xscale('log')
+
+# 目盛りの設定 (既存のticks_positions, ticks_labelsを利用)
+plt.xticks(ticks_positions, ticks_labels, fontsize=12)
+
+# 地球の1気圧 (約101325 Pa) に参考線を引く
+plt.axhline(y=101325, color='gray', linestyle='--', linewidth=1, label='1 atm (Earth)')
+
+plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
+plt.tight_layout()
+plt.savefig("surface_pressure_evolution_central_flux.png")
+plt.close()
