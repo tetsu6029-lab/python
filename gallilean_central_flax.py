@@ -172,6 +172,10 @@ def calculate_p_q(M_cp_kg, M_dot_g_kg_s, r, alpha, r_gg, L_cp):
         q_current = q_new
         p_current = p_new
 
+        # ★ 追加: forループがbreakされずに10回完走してしまった場合のみここを通る
+    else:
+        q_non_converge_count += 1
+
     return p_current, q_current
 
 # --- 追加: 円盤ガス総質量を計算する関数 ---
@@ -509,6 +513,9 @@ class Satellite:
 t_year = 1.0e6             # イオが捕獲される時間からスタート
 dt_year = 1000.0            # タイムステップ
 t_max_year = 3.0e7         # 3000万年
+# ★ 追加: qの計算の収束状況をカウントする変数
+q_total_count = 0
+q_non_converge_count = 0
 
 # 追加: 固定軌道での温度を記録するための準備
 target_fixed_r = 14.8 * R_J  # グラフ化したい軌道半径を指定
@@ -720,6 +727,14 @@ while t_year <= t_max_year:
 # 3. 計算終了後、結果を出力・グラフ化
 # ==========================================
 colors = ['tab:orange', 'tab:cyan', 'tab:blue', 'tab:gray', 'tab:magenta']
+
+# ★ 追加: 未収束の割合をターミナルに表示
+print("-" * 40)
+print(f"qの総計算回数: {q_total_count} 回")
+print(f"うち未収束回数: {q_non_converge_count} 回")
+if q_total_count > 0:
+    print(f"未収束の割合: {(q_non_converge_count / q_total_count) * 100:.2f} %")
+print("-" * 40)
 
 # --- 1枚目: 軌道進化 (Orbital Evolution) ---
 plt.figure(figsize=(8, 5))  # 個別のグラフのサイズを指定
