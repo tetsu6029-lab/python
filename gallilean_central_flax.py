@@ -140,6 +140,9 @@ def calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, r, alpha, r_gg, L_cp, q_gues
 
 # 中心差分法を用いて、反復計算で正確なべき指数 p と q を計算する関数
 def calculate_p_q(M_cp_kg, M_dot_g_kg_s, r, alpha, r_gg, L_cp):
+    global q_total_count, q_non_converge_count  # ★ 必ず def の直下に書く
+    q_total_count += 1                          # ★ その次にカウントアップ
+    
     dr = r * 1e-3
     r_minus = r - dr
     r_plus  = r + dr
