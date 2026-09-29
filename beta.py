@@ -784,7 +784,7 @@ for i, sat in enumerate(satellites):
         P_pa = [p / 10.0 for p in sat.history_P]
         plt.plot(sat.history_T_d, P_pa, label=sat.name, color=colors[i], linewidth=2)
 
-plt.ylabel(' T_d (K)P (Pa)')
+plt.ylabel('P (Pa)')
 plt.xlabel('T_d (K)')
 plt.title('各衛星軌道におけるP_gとT_dの関係')
 plt.yscale('log')
