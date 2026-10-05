@@ -606,7 +606,7 @@ while t_year <= t_max_year:
     # 動的スノーラインの計算 (Shibaike et al. 2019 に準拠したモル分率)
     X_H2O = 1.7e-4
     P_H2O_cgs = max(X_H2O * P_gas_cgs, 1e-20)
-    T_snow_val = 6141.0 / (31.4 - np.log(P_H2O_cgs))
+    T_snow_val = 6070.0 / (30.86 - np.log(P_H2O_cgs))
 
     fixed_history_t.append(t_year)
     fixed_history_Td.append(Td_fixed)
@@ -1150,8 +1150,8 @@ plt.close()
 # ---固定軌道でのスノーラインの変化---
 plt.figure(figsize=(8, 5))
 
-plt.plot(fixed_history_t, fixed_history_Td, label=r"Disk Temperature (\(T_d\))", color="red", linewidth=2)
-plt.plot(fixed_history_t, fixed_history_T_snow, label=r"Snowline Temperature (\(T_{snow}\))", color="blue", linestyle="--", linewidth=2)
+plt.plot(fixed_history_t, fixed_history_Td, label=r"Disk Temperature (T_d)", color="red", linewidth=2)
+plt.plot(fixed_history_t, fixed_history_T_snow, label=r"Snowline Temperature (T_{snow})", color="blue", linestyle="--", linewidth=2)
 
 plt.xlabel("Time [years]", fontsize=14)
 plt.ylabel("Temperature [K]", fontsize=14)
