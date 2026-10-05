@@ -96,13 +96,22 @@ def calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, r, alpha, r_gg, L_cp, q_gues
 
         #  太陽からの輻射エネルギーフラックス (F_sun)
         F_sun = sigma_sb * T_bg**4
-        
-        # 面密度とオパシティ
+
+        # 面密度とガス圧力の計算
         Sigma_g = (M_dot_g_kg_s * Omega_K) / (3.0 * np.pi * alpha * c_s**2)
-        if T_d >= 160.0:
-            kappa = 450.0 * r_gg
+        rho_g = Sigma_g / (np.sqrt(2.0 * np.pi) * H_g)
+        P_gas = rho_g * c_s**2
+
+        # --- 追加: クラウジウス・クラペイロン式による動的スノーライン計算 ---
+        X_H2O = 1.7e-4  # 水のモル分率 (Shibaike et al. 2019準拠)
+        P_H2O = max(X_H2O * P_gas, 1e-20)  # ゼロ割り防止
+        T_snow = 6070.0 / (30.86 - np.log(P_H2O))
+
+        # オパシティ
+        if T_d < T_snow:
+            kappa = 450.0 * (T_d / T_snow)**2 * r_gg  # 氷が存在する領域
         else:
-            kappa = 450.0 * (T_d / 160.0)**2 * r_gg
+            kappa = 450.0 * r_gg                      # 岩石のみの領域
             
         tau = kappa * Sigma_g
         tau = max(tau, 1e-10)
@@ -232,8 +241,18 @@ def calculate_st_p(p, q, M_dot_p, M_dot_g, alpha, T_d, M_cp_kg, r, eta):
     Omega_K = np.sqrt(G * M_cp_kg / r**3)
     eta_safe = max(abs(eta), 1e-15) # ゼロ割り回避
 
+    # --- 動的スノーラインの計算 ---
+    H_g_temp = c_s / Omega_K
+    Sigma_g_temp = (M_dot_g / Omega_K) / (3.0 * np.pi * alpha * c_s**2)
+    rho_g_temp = Sigma_g_temp / (np.sqrt(2.0 * np.pi) * H_g_temp)
+    P_gas_temp = rho_g_temp * c_s**2
+    
+    X_H2O = 1.7e-4
+    P_H2O = max(X_H2O * P_gas_temp, 1e-20)
+    T_snow = 6070.0 / (30.86 - np.log(P_H2O))
+
     # スノーラインを境に限界衝突速度(v_cr)を変更
-    if T_d >= 160.0:
+    if T_d >= T_snow:
         v_cr = 500.0   # 岩石ペブルの破壊速度 (cm/s)
     else:
         v_cr = 5000.0  # 氷ペブルの破壊速度 (cm/s)
@@ -527,6 +546,7 @@ fixed_history_Td = []
 fixed_history_T_visc = []
 fixed_history_T_irr = []
 fixed_history_T_sun = []
+fixed_history_T_snow = []
 
 history_disk_mass_t = []
 history_disk_mass = []
@@ -558,7 +578,7 @@ while t_year <= t_max_year:
     history_M_cp.append(M_cp_MJ)
     history_M_dot_g.append(M_dot_g_kg_s)
 
-# 指定した固定軌道における各温度成分を計算して記録
+    # 指定した固定軌道における各温度成分を計算して記録
     p_fix, q_fix = calculate_p_q(M_cp_kg, M_dot_g_kg_s, target_fixed_r, alpha, r_gg, L_cp)
     Td_fixed, Sigma_g_fixed = calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, target_fixed_r, alpha, r_gg, L_cp, q_guess=q_fix)
     
@@ -573,14 +593,28 @@ while t_year <= t_max_year:
     F_in_fixed = 0.5 * (L_cp / (4.0 * np.pi * target_fixed_r**2)) * derivative_term
     T_irr_val = (max(F_in_fixed, 0) / sigma_sb)**0.25
     
-    # ③ 摩擦熱 (T_visc): 全体の4乗から他の2つの4乗を引き算して逆算
+    # ③ 摩擦熱 (T_visc)
     T_visc_val = max(Td_fixed**4 - T_irr_val**4 - T_sun_val**4, 0.0)**0.25
+
+    # ④ スノーラインの温度（T_snow）
+    # まず空間密度(rho_g)とMKS単位系のガス圧(Pa)を計算
+    rho_g_fixed = Sigma_g_fixed / (np.sqrt(2.0 * np.pi) * H_g_fixed)
+    P_gas_fixed = rho_g_fixed * c_s_fixed**2
+    
+    # 単位を MKS(Pa) から CGS(dyn/cm^2) に変換
+    P_gas_cgs = P_gas_fixed * 10.0  
+    
+    # 動的スノーラインの計算 (Shibaike et al. 2019 に準拠したモル分率)
+    X_H2O = 1.7e-4
+    P_H2O_cgs = max(X_H2O * P_gas_cgs, 1e-20)
+    T_snow_val = 6141.0 / (31.4 - np.log(P_H2O_cgs))
 
     fixed_history_t.append(t_year)
     fixed_history_Td.append(Td_fixed)
     fixed_history_T_visc.append(T_visc_val)
     fixed_history_T_irr.append(T_irr_val)
     fixed_history_T_sun.append(T_sun_val)
+    fixed_history_T_snow.append(T_snow_val)
 
     # すでに捕獲済みの衛星を抽出し、軌道が「外側」の順に並び替え
     active_sats = [sat for sat in satellites if t_year >= sat.t_cap]
@@ -1112,4 +1146,21 @@ plt.axhline(y=101325, color='gray', linestyle='--', linewidth=1, label='1 atm (E
 plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
 plt.tight_layout()
 plt.savefig("surface_pressure_evolution_central_flux.png")
+plt.close()
+
+# ---固定軌道でのスノーラインの変化---
+plt.figure(figsize=(8, 5))
+
+plt.plot(fixed_history_t, fixed_history_Td, label=r"Disk Temperature (\(T_d\))", color="red", linewidth=2)
+plt.plot(fixed_history_t, fixed_history_T_snow, label=r"Snowline Temperature (\(T_{snow}\))", color="blue", linestyle="--", linewidth=2)
+
+plt.xlabel("Time [years]", fontsize=14)
+plt.ylabel("Temperature [K]", fontsize=14)
+plt.title("Evolution of Temperatures at Fixed Orbit", fontsize=16)
+plt.xscale("log") 
+plt.legend(fontsize=12)
+plt.grid(True, which="both", linestyle=":", alpha=0.7)
+
+plt.tight_layout()
+plt.savefig("snowline_central_flux.png")
 plt.close()

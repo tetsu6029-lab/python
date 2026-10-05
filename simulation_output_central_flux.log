@@ -1,9 +1,6 @@
 シミュレーションを開始します...
-Traceback (most recent call last):
-  File "/home/htetsu/python/gallilean_central_flax.py", line 591, in <module>
-    p, q = calculate_p_q(M_cp_kg, M_dot_g_kg_s, sat.r_orb, alpha, r_gg, L_cp)
-           ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/htetsu/python/gallilean_central_flax.py", line 177, in calculate_p_q
-    q_non_converge_count += 1
-    ^^^^^^^^^^^^^^^^^^^^
-UnboundLocalError: cannot access local variable 'q_non_converge_count' where it is not associated with a value
+----------------------------------------
+qの総計算回数: 143255 回
+うち未収束回数: 368 回
+未収束の割合: 0.26 %
+----------------------------------------
