@@ -599,10 +599,9 @@ while t_year <= t_max_year:
     # ④ スノーラインの温度（T_snow）
     # まず空間密度(rho_g)とMKS単位系のガス圧(Pa)を計算
     rho_g_fixed = Sigma_g_fixed / (np.sqrt(2.0 * np.pi) * H_g_fixed)
-    P_gas_fixed = rho_g_fixed * c_s_fixed**2
+    P_gas_cgs = rho_g_fixed * c_s_fixed**2
     
-    # 単位を MKS(Pa) から CGS(dyn/cm^2) に変換
-    P_gas_cgs = P_gas_fixed * 10.0  
+   
     
     # 動的スノーラインの計算 (Shibaike et al. 2019 に準拠したモル分率)
     X_H2O = 1.7e-4
