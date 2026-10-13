@@ -1151,7 +1151,7 @@ plt.close()
 plt.figure(figsize=(8, 5))
 
 plt.plot(fixed_history_t, fixed_history_Td, label=r"Disk Temperature (T_d)", color="red", linewidth=2)
-plt.plot(fixed_history_t, fixed_history_T_snow, label=r"Snowline Temperature (T_{snow})", color="blue", linestyle="--", linewidth=2)
+plt.plot(fixed_history_t, fixed_history_T_snow, label=r"Water Ice condensation Temperature (T_{snow})", color="blue", linestyle="--", linewidth=2)
 
 plt.xlabel("Time [years]", fontsize=14)
 plt.ylabel("Temperature [K]", fontsize=14)
