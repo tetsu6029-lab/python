@@ -9,7 +9,7 @@ plt.rcParams['font.family'] = 'IPAexGothic'
 # --- 物理定数 ---
 G = 6.6743e-8             # 万有引力定数 (cm^3/g/s^2)
 sigma_sb = 5.67e-5         # ステファン・ボルツマン定数 (W/cm^2/K^4)
-r_gg = 5.0e-7              # 粒子とガスの面密度比
+r_gg = 3.4e-7              # 粒子とガスの面密度比
 k_B = 1.380649e-16         # ボルツマン定数 (erg/K)
 m_g = 3.9e-24              # ガスの平均分子質量 (g)
 alpha = 1.0e-4              # 乱流の強さ
@@ -26,6 +26,8 @@ au_cm = 1.495978707e13     # 1天文単位 (cm)
 a_J = 5.2 * au_cm          # 太陽から木星までの距離 (cm)
 L_sun_early = 0.70 * L_sun # 形成初期の太陽光度 (現在の75%)
 T_bg = (L_sun_early / (16.0 * np.pi * a_J**2 * sigma_sb))**0.25 # 太陽輻射による木星軌道付近の平衡温度 
+rho_ice = 1.4              # 氷の密度 (g/cm^3)
+rho_rock = 3.0             # 岩石の密度 (g/cm^3)
 
 # ==========================================
 # 事前準備：物理量を計算する関数群
@@ -57,7 +59,7 @@ def calculate_mdot_g(t, t_gap):
         M_dot_g = M_dot_g_gap
     return M_dot_g
 
-# 木星の光度 L_cp [erg/s] を時間発展で計算する関数
+# 木星の光度 L_cp [erg/s] を時間発展で計算する関数(Marley 2007)
 def calculate_L_cp(t, t_gap):
     t_end = 3.0e7
     L_gap = 1.5e-5 * L_sun      # ギャップ形成時の光度
@@ -103,7 +105,7 @@ def calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, r, alpha, r_gg, L_cp, q_gues
         P_gas = rho_g * c_s**2
 
         # --- 追加: クラウジウス・クラペイロン式による動的スノーライン計算 ---
-        X_H2O = 1.7e-4  # 水のモル分率 (Shibaike et al. 2019準拠)
+        X_H2O = 1.7e-4  # 水のモル分率 (Oka et al. 2011により参考)
         P_H2O = max(X_H2O * P_gas, 1e-20)  # ゼロ割り防止
         T_snow = 6070.0 / (30.86 - np.log(P_H2O))
 
@@ -519,6 +521,9 @@ class Satellite:
         self.R_s = 3.35e7         # 初期半径 (cm)
         self.rho_s = 1.9       # 密度 (cm/g)
         self.M_s = (4.0/3.0) * np.pi * self.R_s**3 * self.rho_s
+        # ★ 追加: 蓄積された氷の総質量（初期の種は純粋な岩石と仮定）
+        self.M_ice = self.M_s * 0.5
+        self.M_rock = self.M_s * 0.5  
         
         # 記録用リスト
         self.history_t, self.history_Rs, self.history_r, self.history_Ts = [], [], [], []
@@ -530,6 +535,7 @@ class Satellite:
         self.history_R_out = []
         self.history_R_B = []
         self.history_P_surf = []
+        self.history_ice_frac = []
 
 # シミュレーションの初期設定
 t_year = 1.0e6             # イオが捕獲される時間からスタート
@@ -628,8 +634,8 @@ while t_year <= t_max_year:
         T_d, Sigma_g = calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, sat.r_orb, alpha, r_gg, L_cp, q_guess=q)
         if np.isnan(T_d): continue
             
-        # スノーラインの判定（160K以上なら氷が蒸発してペブル質量フラックスが半減）
-        local_M_dot_p = current_M_dot_p * 0.5 if T_d >= 160.0 else current_M_dot_p
+        # スノーラインの判定（T_snow以上なら氷が蒸発してペブル質量フラックスが半減）
+        local_M_dot_p = current_M_dot_p * 0.5 if T_d >= T_snow_val else current_M_dot_p
        
         eta, H_g = calculate_eta(M_cp_kg, M_dot_g_kg_s, sat.r_orb, alpha, r_gg, L_cp)
         
@@ -651,7 +657,25 @@ while t_year <= t_max_year:
         
         current_M_dot_p = current_M_dot_p - M_dot_s
         
-        dRs_dt = M_dot_s / (4 * np.pi * sat.rho_s * sat.R_s**2)
+        # --- 追加・修正: 氷と岩石の質量を個別に計算 ---
+        # スノーラインより外側なら、降着するペブルの50%が氷だと仮定
+        f_ice = 0.5 if T_d < T_snow_val else 0.0
+        
+        dt_sec = dt_year * 365.25 * 24 * 3600
+        dM_s_total = M_dot_s * dt_sec
+        
+        sat.next_M_ice = sat.M_ice + dM_s_total * f_ice
+        sat.next_M_rock = sat.M_rock + dM_s_total * (1.0 - f_ice)
+        sat.next_M_s = sat.next_M_ice + sat.next_M_rock
+        
+        # 体積から新しい半径と平均密度を逆算
+        V_next = (sat.next_M_ice / rho_ice) + (sat.next_M_rock / rho_rock)
+        sat.next_R_s = ((3.0 / (4.0 * np.pi)) * V_next)**(1.0 / 3.0)
+        sat.next_rho_s = sat.next_M_s / V_next
+        
+        # 降着するペブルの密度 (rho_in) を使って半径の成長速度を計算
+        rho_in = 1.0 / (f_ice / rho_ice + (1.0 - f_ice) / rho_rock) if f_ice > 0 else rho_rock
+        dRs_dt = M_dot_s / (4.0 * np.pi * rho_in * sat.R_s**2)
         
         c_s = np.sqrt((k_B * T_d) / m_g)
         rho_g = Sigma_g / (np.sqrt(2.0 * np.pi) * H_g)
@@ -695,6 +719,8 @@ while t_year <= t_max_year:
         v_mig = calculate_v_ad(St_s, eta, v_K) + v_t1
         u_i = calculate_u_i(G, sat.M_s, sat.R_s, delta_v, st_p, Omega_K)
         Ts_strict, _ = calculate_Ts_strict(sat.rho_s, C_p, dRs_dt, M_dot_s, u_i, sat.R_s, T_d)
+
+
         
         # 次のステップの値を一時保存
         sat.next_r_orb = sat.r_orb + v_mig * (dt_year * 365.25 * 24 * 3600)
@@ -718,6 +744,15 @@ while t_year <= t_max_year:
         sat.next_R_B = R_B
         sat.next_P_surf = P_surf_cgs
 
+        # --- 追加: 氷質量の獲得 ---
+        dM_s = sat.next_M_s - sat.M_s  # このステップで獲得した質量
+        
+        # スノーライン(T_snow)より外側なら、獲得したペブルの50%が氷だと仮定
+        if T_d < T_snow_val:
+            sat.next_M_ice = sat.M_ice + dM_s * 0.5
+        else:
+            sat.next_M_ice = sat.M_ice  # 氷は増えない
+
     # --- ② 軌道共鳴チェック（内側の衛星から外側へ順番に判定） ---
     active_sats.sort(key=lambda s: s.r_orb)
     
@@ -739,6 +774,10 @@ while t_year <= t_max_year:
         
         # 状態を確定し、リストに記録
         sat.r_orb, sat.R_s, sat.M_s = sat.next_r_orb, sat.next_R_s, sat.next_M_s
+        sat.M_ice = sat.next_M_ice
+        sat.M_rock = sat.next_M_rock       
+        sat.rho_s = sat.next_rho_s      
+
         sat.history_t.append(t_year)
         sat.history_Rs.append(sat.R_s / 100000.0)
         sat.history_r.append(sat.r_orb / R_J)
@@ -757,6 +796,7 @@ while t_year <= t_max_year:
         sat.history_M_atm.append(sat.next_M_atm)
         sat.history_R_out.append(sat.next_R_out / 100000.0)  # km単位に変換
         sat.history_P_surf.append(sat.next_P_surf / 10.0)    # ★ 追加: dyn/cm^2 から Pa に変換
+        sat.history_ice_frac.append(sat.M_ice / sat.M_s)
     t_year += dt_year
 
 # ==========================================
@@ -771,6 +811,37 @@ print(f"うち未収束回数: {q_non_converge_count} 回")
 if q_total_count > 0:
     print(f"未収束の割合: {(q_non_converge_count / q_total_count) * 100:.2f} %")
 print("-" * 40)
+
+# ---------------------------------------------------
+# ★ ここに追加: 最終的な質量と氷質量分率の出力・保存
+# ---------------------------------------------------
+output_text = "=" * 40 + "\n"
+output_text += "計算終了時 (3000万年) の衛星の最終パラメータ\n"
+output_text += "=" * 40 + "\n"
+
+for sat in satellites:
+    # 質量を g から kg に変換
+    final_mass_kg = sat.M_s / 1000.0
+    
+    # 氷質量分率の計算 (前回追加した M_ice が実装されているか確認)
+    if hasattr(sat, 'M_ice'):
+        ice_frac = (sat.M_ice / sat.M_s) * 100.0
+        ice_str = f"{ice_frac:.1f} %"
+    else:
+        ice_str = "未計算 (M_iceの実装が必要です)"
+        
+    output_text += f"[{sat.name}]\n"
+    output_text += f"  最終質量   : {final_mass_kg:.3e} kg \n"
+    output_text += f"  氷質量分率 : {ice_str}\n"
+    output_text += f"  最終軌道   : {sat.r_orb / R_J:.2f} R_J\n"
+    output_text += "-" * 40 + "\n"
+
+# ターミナルに表示
+print(output_text)
+
+# テキストファイルとして保存
+with open("final_satellite_status.txt", "w", encoding="utf-8") as f:
+    f.write(output_text)
 
 # --- 1枚目: 軌道進化 (Orbital Evolution) ---
 plt.figure(figsize=(8, 5))  # 個別のグラフのサイズを指定
@@ -1151,7 +1222,7 @@ plt.close()
 plt.figure(figsize=(8, 5))
 
 plt.plot(fixed_history_t, fixed_history_Td, label=r"Disk Temperature (T_d)", color="red", linewidth=2)
-plt.plot(fixed_history_t, fixed_history_T_snow, label=r"Water Ice condensation Temperature (T_{snow})", color="blue", linestyle="--", linewidth=2)
+plt.plot(fixed_history_t, fixed_history_T_snow, label=r"Water Ice condensation Temperature (T_{con})", color="blue", linestyle="--", linewidth=2)
 
 plt.xlabel("Time [years]", fontsize=14)
 plt.ylabel("Temperature [K]", fontsize=14)
