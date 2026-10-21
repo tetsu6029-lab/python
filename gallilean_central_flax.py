@@ -9,7 +9,7 @@ plt.rcParams['font.family'] = 'IPAexGothic'
 # --- 物理定数 ---
 G = 6.6743e-8             # 万有引力定数 (cm^3/g/s^2)
 sigma_sb = 5.67e-5         # ステファン・ボルツマン定数 (W/cm^2/K^4)
-r_gg = 3.4e-7              # 粒子とガスの面密度比
+r_gg = 1.7e-7              # 粒子とガスの面密度比
 k_B = 1.380649e-16         # ボルツマン定数 (erg/K)
 m_g = 3.9e-24              # ガスの平均分子質量 (g)
 alpha = 1.0e-4              # 乱流の強さ
@@ -1234,3 +1234,68 @@ plt.grid(True, which="both", linestyle=":", alpha=0.7)
 plt.tight_layout()
 plt.savefig("snowline_central_flux.png")
 plt.close()
+"""
+# ==========================================
+# 追加: ガニメデ軌道における光学厚み tau の時間進化 (r_gg 依存性の比較)
+# ==========================================
+target_r_tau = 14.97 * R_J  # ガニメデの軌道
+t_array_tau = np.logspace(5, 7.5, 50)  # 10万年〜約3000万年
+
+# 現在の r_gg (3.4e-7) を含め、論文(1.7e-7)前後の候補リストを設定
+r_gg_candidates = [1.0e-7, 1.7e-7, 3.4e-7, 5.0e-7, 8.0e-7] 
+
+plt.figure(figsize=(9, 6))
+
+for r_gg_test in r_gg_candidates:
+    tau_history = []
+    t_history_tau = []
+    
+    for t_yr in t_array_tau:
+        # 各時刻の円盤の基本パラメータを計算
+        M_cp_MJ_tau = calculate_M_cp(t_yr, t_gap)
+        M_cp_kg_tau = M_cp_MJ_tau * M_J
+        M_dot_g_kg_s_tau = calculate_mdot_g(t_yr, t_gap) * M_J / (365.25 * 24 * 3600)
+        L_cp_tau = calculate_L_cp(t_yr, t_gap)
+        
+        # ガニメデ軌道での温度と面密度を計算
+        T_d_tau, Sigma_g_tau = calculate_disk_structure(M_cp_kg_tau, M_dot_g_kg_s_tau, target_r_tau, alpha, r_gg_test, L_cp_tau, q_guess=0.5)
+        
+        if np.isnan(T_d_tau):
+            continue
+            
+        # ガス圧と動的スノーラインの計算
+        Omega_K_tau = np.sqrt(G * M_cp_kg_tau / target_r_tau**3)
+        c_s_tau = np.sqrt((k_B * T_d_tau) / m_g)
+        H_g_tau = c_s_tau / Omega_K_tau
+        rho_g_tau = Sigma_g_tau / (np.sqrt(2.0 * np.pi) * H_g_tau)
+        P_gas_cgs_tau = rho_g_tau * c_s_tau**2
+        
+        X_H2O = 1.7e-4
+        P_H2O_cgs_tau = max(X_H2O * P_gas_cgs_tau, 1e-20)
+        T_snow_tau = 6070.0 / (30.86 - np.log(P_H2O_cgs_tau))
+        
+        # オパシティ kappa と 光学厚み tau の計算
+        if T_d_tau < T_snow_tau:
+            kappa_tau = 450.0 * (T_d_tau / T_snow_tau)**2 * r_gg_test
+        else:
+            kappa_tau = 450.0 * r_gg_test
+            
+        tau_val = kappa_tau * Sigma_g_tau
+        tau_history.append(tau_val)
+        t_history_tau.append(t_yr)
+        
+    plt.plot(t_history_tau, tau_history, label=f'$r_{{gg}} = {r_gg_test:.1e}$', linewidth=2)
+
+# 物理的な境界線である tau = 1 に直線を引く
+plt.axhline(y=1.0, color='red', linestyle='--', linewidth=2, label=r'$\tau = 1$ (遷移ライン)')
+
+plt.xscale('log')
+plt.yscale('log')
+plt.xlabel('Time (Years)', fontsize=14)
+plt.ylabel(r'Optical Depth $\tau$ at Ganymede Orbit', fontsize=14)
+plt.title('ガニメデ軌道 (15 $R_J$) における光学厚み $\tau$ の進化', fontsize=16)
+plt.legend(fontsize=12)
+plt.grid(True, which="both", linestyle=":", alpha=0.7)
+plt.tight_layout()
+plt.savefig("tau_evolution_ganymede_comparison.png")
+"""
