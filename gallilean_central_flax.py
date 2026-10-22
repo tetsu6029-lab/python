@@ -721,7 +721,7 @@ while t_year <= t_max_year:
         
         # 次のステップの値を一時保存
         sat.next_r_orb = sat.r_orb + v_mig * (dt_year * 365.25 * 24 * 3600)
-        sat.next_R_s = sat.R_s + dRs_dt * (dt_year * 365.25 * 24 * 3600)
+       #sat.next_R_s = sat.R_s + dRs_dt * (dt_year * 365.25 * 24 * 3600)
         sat.next_Ts = Ts_strict
         sat.next_M_s = (4.0 / 3.0) * np.pi * sat.next_R_s**3 * sat.rho_s
         sat.next_b_t1 = b_t1
