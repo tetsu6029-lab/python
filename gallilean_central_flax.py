@@ -9,7 +9,7 @@ plt.rcParams['font.family'] = 'IPAexGothic'
 # --- 物理定数 ---
 G = 6.6743e-8             # 万有引力定数 (cm^3/g/s^2)
 sigma_sb = 5.67e-5         # ステファン・ボルツマン定数 (W/cm^2/K^4)
-r_gg = 1.7e-7              # 粒子とガスの面密度比
+r_gg = 1.27e-7              # 粒子とガスの面密度比
 k_B = 1.380649e-16         # ボルツマン定数 (erg/K)
 m_g = 3.9e-24              # ガスの平均分子質量 (g)
 alpha = 1.0e-4              # 乱流の強さ
@@ -545,14 +545,17 @@ t_max_year = 3.0e7         # 3000万年
 q_total_count = 0
 q_non_converge_count = 0
 
-# 追加: 固定軌道での温度を記録するための準備
-target_fixed_r = 14.8 * R_J  # グラフ化したい軌道半径を指定
-fixed_history_t = []
-fixed_history_Td = []
-fixed_history_T_visc = []
-fixed_history_T_irr = []
-fixed_history_T_sun = []
-fixed_history_T_snow = []
+# --- 変更: 4大衛星の固定軌道での温度進化を記録するための準備 ---
+fixed_orbits = {
+    "Io": 5.89 * R_J,
+    "Europa": 9.38 * R_J,
+    "Ganymede": 14.97 * R_J,
+    "Callisto": 26.34 * R_J
+}
+# 各衛星のデータを保存する辞書を作成
+fixed_histories = {
+    name: {'t': [], 'Td': [], 'T_snow': []} for name in fixed_orbits.keys()
+}
 
 history_disk_mass_t = []
 history_disk_mass = []
@@ -584,42 +587,30 @@ while t_year <= t_max_year:
     history_M_cp.append(M_cp_MJ)
     history_M_dot_g.append(M_dot_g_kg_s)
 
-    # 指定した固定軌道における各温度成分を計算して記録
-    p_fix, q_fix = calculate_p_q(M_cp_kg, M_dot_g_kg_s, target_fixed_r, alpha, r_gg, L_cp)
-    Td_fixed, Sigma_g_fixed = calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, target_fixed_r, alpha, r_gg, L_cp, q_guess=q_fix)
-    
-    # ① 太陽からの熱 (T_sun)
-    T_sun_val = T_bg
-    
-    # ② 木星からの熱 (T_irr)
-    Omega_K_fixed = np.sqrt(G * M_cp_kg / target_fixed_r**3)
-    c_s_fixed = np.sqrt((k_B * Td_fixed) / m_g)
-    H_g_fixed = c_s_fixed / Omega_K_fixed
-    derivative_term = 0.5 * s_const * (H_g_fixed / target_fixed_r) * (1.0 - q_fix)
-    F_in_fixed = 0.5 * (L_cp / (4.0 * np.pi * target_fixed_r**2)) * derivative_term
-    T_irr_val = (max(F_in_fixed, 0) / sigma_sb)**0.25
-    
-    # ③ 摩擦熱 (T_visc)
-    T_visc_val = max(Td_fixed**4 - T_irr_val**4 - T_sun_val**4, 0.0)**0.25
+   # --- 変更: 4大衛星の固定軌道における温度成分を計算して記録 ---
+    for name, r_fixed in fixed_orbits.items():
+        p_fix, q_fix = calculate_p_q(M_cp_kg, M_dot_g_kg_s, r_fixed, alpha, r_gg, L_cp)
+        Td_fixed, Sigma_g_fixed = calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, r_fixed, alpha, r_gg, L_cp, q_guess=q_fix)
+        
+        if np.isnan(Td_fixed):
+            continue
+            
+        Omega_K_fixed = np.sqrt(G * M_cp_kg / r_fixed**3)
+        c_s_fixed = np.sqrt((k_B * Td_fixed) / m_g)
+        H_g_fixed = c_s_fixed / Omega_K_fixed
+        rho_g_fixed = Sigma_g_fixed / (np.sqrt(2.0 * np.pi) * H_g_fixed)
+        P_gas_cgs = rho_g_fixed * c_s_fixed**2
+        
+        X_H2O = 1.7e-4
+        P_H2O_cgs = max(X_H2O * P_gas_cgs, 1e-20)
+        T_snow_val = 6070.0 / (30.86 - np.log(P_H2O_cgs))
+        
+        # 辞書に記録
+        fixed_histories[name]['t'].append(t_year)
+        fixed_histories[name]['Td'].append(Td_fixed)
+        fixed_histories[name]['T_snow'].append(T_snow_val)
 
-    # ④ スノーラインの温度（T_snow）
-    # まず空間密度(rho_g)とMKS単位系のガス圧(Pa)を計算
-    rho_g_fixed = Sigma_g_fixed / (np.sqrt(2.0 * np.pi) * H_g_fixed)
-    P_gas_cgs = rho_g_fixed * c_s_fixed**2
     
-   
-    
-    # 動的スノーラインの計算 (Shibaike et al. 2019 に準拠したモル分率)
-    X_H2O = 1.7e-4
-    P_H2O_cgs = max(X_H2O * P_gas_cgs, 1e-20)
-    T_snow_val = 6070.0 / (30.86 - np.log(P_H2O_cgs))
-
-    fixed_history_t.append(t_year)
-    fixed_history_Td.append(Td_fixed)
-    fixed_history_T_visc.append(T_visc_val)
-    fixed_history_T_irr.append(T_irr_val)
-    fixed_history_T_sun.append(T_sun_val)
-    fixed_history_T_snow.append(T_snow_val)
 
     # すでに捕獲済みの衛星を抽出し、軌道が「外側」の順に並び替え
     active_sats = [sat for sat in satellites if t_year >= sat.t_cap]
@@ -633,17 +624,26 @@ while t_year <= t_max_year:
         p, q = calculate_p_q(M_cp_kg, M_dot_g_kg_s, sat.r_orb, alpha, r_gg, L_cp)
         T_d, Sigma_g = calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, sat.r_orb, alpha, r_gg, L_cp, q_guess=q)
         if np.isnan(T_d): continue
+
+        # ★ 追加・修正: 衛星の現在位置における「局所的なスノーライン温度 (T_snow_local)」を計算
+        v_K = np.sqrt(G * M_cp_kg / sat.r_orb)
+        Omega_K = v_K / sat.r_orb
+        c_s_local = np.sqrt((k_B * T_d) / m_g)
+        H_g_local = c_s_local / Omega_K
+        rho_g_local = Sigma_g / (np.sqrt(2.0 * np.pi) * H_g_local)
+        P_gas_local = rho_g_local * c_s_local**2
+        X_H2O = 1.7e-4
+        P_H2O_local = max(X_H2O * P_gas_local, 1e-20)
+        T_snow_local = 6070.0 / (30.86 - np.log(P_H2O_local))
             
-        # スノーラインの判定（T_snow以上なら氷が蒸発してペブル質量フラックスが半減）
-        local_M_dot_p = current_M_dot_p * 0.5 if T_d >= T_snow_val else current_M_dot_p
+        # 修正: 全体共通の T_snow_val ではなく、局所の T_snow_local を使う
+        local_M_dot_p = current_M_dot_p * 0.5 if T_d >= T_snow_local else current_M_dot_p
        
         eta, H_g = calculate_eta(M_cp_kg, M_dot_g_kg_s, sat.r_orb, alpha, r_gg, L_cp)
         
         st_p = calculate_st_p(p, q, local_M_dot_p, M_dot_g_kg_s, alpha, T_d, M_cp_kg, sat.r_orb, eta)
         
-        v_K = np.sqrt(G * M_cp_kg / sat.r_orb)
-        Omega_K = v_K / sat.r_orb
-        
+        # （...中略: H_p や P_eff などの計算...）
         H_p = H_g * (1.0 + (st_p / alpha) * (1.0 + 2.0 * st_p) / (1.0 + st_p))**(-0.5)
         h_p = H_p / sat.r_orb
 
@@ -651,15 +651,12 @@ while t_year <= t_max_year:
         delta_v = calculate_delta_v(mu_s, eta, st_p, v_K)
         P_eff = calculate_P_eff(mu_s, delta_v, v_K, st_p, eta, h_p)
         
-        # 【重要】自分が捕獲した分、さらに内側に流れるペブルが減る（フィルタリング）
-        
         M_dot_s = local_M_dot_p * P_eff
-        
         current_M_dot_p = current_M_dot_p - M_dot_s
         
-        # --- 追加・修正: 氷と岩石の質量を個別に計算 ---
-        # スノーラインより外側なら、降着するペブルの50%が氷だと仮定
-        f_ice = 0.5 if T_d < T_snow_val else 0.0
+        # 修正: ここでも局所の T_snow_local を使う
+        f_ice = 0.5 if T_d < T_snow_local else 0.0
+            
         
         dt_sec = dt_year * 365.25 * 24 * 3600
         dM_s_total = M_dot_s * dt_sec
@@ -748,7 +745,7 @@ while t_year <= t_max_year:
         dM_s = sat.next_M_s - sat.M_s  # このステップで獲得した質量
         
         # スノーライン(T_snow)より外側なら、獲得したペブルの50%が氷だと仮定
-        if T_d < T_snow_val:
+        if T_d < T_snow_local:
             sat.next_M_ice = sat.M_ice + dM_s * 0.5
         else:
             sat.next_M_ice = sat.M_ice  # 氷は増えない
@@ -813,7 +810,7 @@ if q_total_count > 0:
 print("-" * 40)
 
 # ---------------------------------------------------
-# ★ ここに追加: 最終的な質量と氷質量分率の出力・保存
+# 最終的な質量と氷質量分率の出力・保存
 # ---------------------------------------------------
 output_text = "=" * 40 + "\n"
 output_text += "計算終了時 (3000万年) の衛星の最終パラメータ\n"
@@ -914,16 +911,6 @@ plt.tight_layout()
 plt.savefig("disk_temp_central_flax.png")
 plt.close()
 
-# --- 追加: 固定軌道における円盤ガス温度 ---
-plt.figure(figsize=(8, 5))
-plt.plot(fixed_history_t, fixed_history_Td, color='tab:red', linewidth=2)
-plt.ylabel('Disk Midplane Temp T_d (K)')
-plt.xlabel('Time (Years)')
-plt.title(f'固定軌道 ({target_fixed_r/R_J} R_J) における円盤ガス温度')
-plt.xscale('log')
-plt.tight_layout()
-plt.savefig("fixed_orbit_Td_central_flax.png")
-plt.close()
 
 # --- 追加: ぺブル集積効率 ---
 plt.figure(figsize=(8, 5))
@@ -1012,23 +999,6 @@ plt.tight_layout()
 plt.savefig("disk_temp_vs_gas_pressure_central_flax.png")
 plt.close()
 
-# --- 追加: 各加熱ソースの比較グラフ ---
-plt.figure(figsize=(8, 5))
-# 全体の温度（実線）
-plt.plot(fixed_history_t, fixed_history_Td, label='Total T_d (総合温度)', color='black', linewidth=2)
-# 各成分（点線）
-plt.plot(fixed_history_t, fixed_history_T_visc, label='T_visc (粘性加熱)', color='tab:red', linestyle='--')
-plt.plot(fixed_history_t, fixed_history_T_irr, label='T_irr (木星からの光)', color='tab:orange', linestyle='--')
-plt.plot(fixed_history_t, fixed_history_T_sun, label='T_sun (太陽からの光)', color='tab:blue', linestyle='--')
-
-plt.ylabel('Temperature (K)')
-plt.xlabel('Time (Years)')
-plt.title(f'各加熱ソースの比較 (固定された軌道)')
-plt.xscale('log')
-plt.legend()
-plt.tight_layout()
-plt.savefig("temperature_components_central_flax.png")
-plt.close()
 
 # --- 追加: 円盤ガス総質量の推移 ---
 plt.figure(figsize=(8, 5))
@@ -1218,23 +1188,39 @@ plt.tight_layout()
 plt.savefig("surface_pressure_evolution_central_flux.png")
 plt.close()
 
-# ---固定軌道でのスノーラインの変化---
-plt.figure(figsize=(8, 5))
+# --- 変更: メインループで記録した履歴 (fixed_histories) を使って描画 ---
+plt.figure(figsize=(10, 6))
 
-plt.plot(fixed_history_t, fixed_history_Td, label=r"Disk Temperature (T_d)", color="red", linewidth=2)
-plt.plot(fixed_history_t, fixed_history_T_snow, label=r"Water Ice condensation Temperature (T_{con})", color="blue", linestyle="--", linewidth=2)
+orbit_colors = {
+    "Io": "tab:orange",
+    "Europa": "tab:cyan",
+    "Ganymede": "tab:blue",
+    "Callisto": "tab:gray"
+}
+
+for name in fixed_orbits.keys():
+    hist = fixed_histories[name]
+    col = orbit_colors[name]
+    
+    if len(hist['t']) > 0:
+        # 実線: 円盤温度 T_d
+        plt.plot(hist['t'], hist['Td'], color=col, linestyle='-', linewidth=2, label=f"{name} ($T_d$)")
+        # 破線: 凝縮温度 T_con
+        plt.plot(hist['t'], hist['T_snow'], color=col, linestyle='--', linewidth=2, label=f"{name} ($T_{{con}}$)")
 
 plt.xlabel("Time [years]", fontsize=14)
 plt.ylabel("Temperature [K]", fontsize=14)
-plt.title("Evolution of Temperatures at Fixed Orbit", fontsize=16)
+plt.title("Evolution of Temperatures at Fixed Orbits", fontsize=16)
 plt.xscale("log") 
-plt.legend(fontsize=12)
+
+# 凡例を2列にして配置
+plt.legend(fontsize=10, ncol=2, loc='lower left')
 plt.grid(True, which="both", linestyle=":", alpha=0.7)
 
 plt.tight_layout()
-plt.savefig("snowline_central_flux.png")
+plt.savefig("snowline_all_satellites_fixed_orbits.png")
 plt.close()
-"""
+
 # ==========================================
 # 追加: ガニメデ軌道における光学厚み tau の時間進化 (r_gg 依存性の比較)
 # ==========================================
@@ -1298,4 +1284,4 @@ plt.legend(fontsize=12)
 plt.grid(True, which="both", linestyle=":", alpha=0.7)
 plt.tight_layout()
 plt.savefig("tau_evolution_ganymede_comparison.png")
-"""
+
