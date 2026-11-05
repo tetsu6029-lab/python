@@ -20,6 +20,8 @@ x = 0.0026                 # ダストとガスの降着比
 C_D = 0.5                  # 抵抗係数 
 C_p = 1.4e7               # 比熱 (erg/g/K)
 gamma = 1.4
+rho_ice = 1.4              # 氷の密度 (g/cm^3)
+rho_rock = 3.0             # 岩石の密度 (g/cm^3)
 # ==========================================
 # 事前準備：物理量を計算する関数群
 # ==========================================
@@ -425,6 +427,9 @@ class Satellite:
         self.R_s = 3.35e7         # 初期半径 (cm)
         self.rho_s = 1.9       # 密度 (cm/g)
         self.M_s = (4.0/3.0) * np.pi * self.R_s**3 * self.rho_s
+        self.M_ice = self.M_s * 0.5
+        self.M_rock = self.M_s * 0.5  
+
         
         # 記録用リスト
         self.history_t, self.history_Rs, self.history_r, self.history_Ts = [], [], [], []
@@ -437,14 +442,21 @@ class Satellite:
         self.history_R_B = []
         self.history_P_surf = []
 # シミュレーションの初期設定
-t_year = 0.0             # イオが捕獲される時間からスタート
+t_year = 1.0             # イオが捕獲される時間からスタート
 dt_year = 1000.0            # タイムステップ
 t_max_year = 3.0e7         # 3000万年
 
-# 追加: 固定軌道での温度を記録するための準備
-target_fixed_r = 14.8 * R_J  # グラフ化したい軌道半径を指定
-fixed_history_t = []
-fixed_history_Td = []
+# --- 変更: 4大衛星の固定軌道での温度進化を記録するための準備 ---
+fixed_orbits = {
+    "Io": 5.89 * R_J,
+    "Europa": 9.38 * R_J,
+    "Ganymede": 14.97 * R_J,
+    "Callisto": 26.34 * R_J
+}
+# 各衛星のデータを保存する辞書を作成
+fixed_histories = {
+    name: {'t': [], 'Td': [], 'T_snow': []} for name in fixed_orbits.keys()
+}
 
 history_disk_mass_t = []
 history_disk_mass = []
@@ -476,10 +488,27 @@ while t_year <= t_max_year:
     history_disk_mass.append(current_disk_mass)
     history_M_cp.append(M_cp_MJ)
     history_M_dot_g.append(M_dot_g_kg_s)
-  # 追加: 指定した固定軌道におけるT_dを計算して記録
-    Td_fixed, _ = calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, target_fixed_r, alpha, r_gg)
-    fixed_history_t.append(t_year)
-    fixed_history_Td.append(Td_fixed)
+
+ # --- 変更: 4大衛星の固定軌道における温度成分を計算して記録 ---
+    for name, r_fixed in fixed_orbits.items():
+        p_fix, q_fix = calculate_p_q(M_cp_kg, M_dot_g_kg_s, r_fixed, alpha, r_gg)
+        Td_fixed, Sigma_g_fixed = calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, r_fixed, alpha, r_gg)
+        
+        if np.isnan(Td_fixed):
+            continue
+            
+        Omega_K_fixed = np.sqrt(G * M_cp_kg / r_fixed**3)
+        c_s_fixed = np.sqrt((k_B * Td_fixed) / m_g)
+        H_g_fixed = c_s_fixed / Omega_K_fixed
+        rho_g_fixed = Sigma_g_fixed / (np.sqrt(2.0 * np.pi) * H_g_fixed)
+        P_gas_cgs = rho_g_fixed * c_s_fixed**2
+        T_snow_val = 160
+        
+        # 辞書に記録
+        fixed_histories[name]['t'].append(t_year)
+        fixed_histories[name]['Td'].append(Td_fixed)
+        fixed_histories[name]['T_snow'].append(T_snow_val)    
+  
 
     # すでに捕獲済みの衛星を抽出し、軌道が「外側」の順に並び替え
     active_sats = [sat for sat in satellites if t_year >= sat.t_cap]
@@ -491,17 +520,22 @@ while t_year <= t_max_year:
     for sat in active_sats:
         T_d, Sigma_g = calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, sat.r_orb, alpha, r_gg)
         if np.isnan(T_d): continue
-            
+
+        # ★ 追加・修正: 衛星の現在位置における「局所的なスノーライン温度 (T_snow_local)」を計算
+        v_K = np.sqrt(G * M_cp_kg / sat.r_orb)
+        Omega_K = v_K / sat.r_orb
+        c_s_local = np.sqrt((k_B * T_d) / m_g)
+        H_g_local = c_s_local / Omega_K
+        rho_g_local = Sigma_g / (np.sqrt(2.0 * np.pi) * H_g_local)
+        P_gas_local = rho_g_local * c_s_local**2
+        T_snow_local = 160    
         # スノーラインの判定（160K以上なら氷が蒸発してペブル質量フラックスが半減）
         local_M_dot_p = current_M_dot_p * 0.5 if T_d >= 160.0 else current_M_dot_p
        
         eta, H_g = calculate_eta(M_cp_kg, M_dot_g_kg_s, sat.r_orb, alpha, r_gg)
         p, q = calculate_p_q(M_cp_kg, M_dot_g_kg_s, sat.r_orb, alpha, r_gg)
         st_p = calculate_st_p(p, q, local_M_dot_p, M_dot_g_kg_s, alpha, T_d, M_cp_kg, sat.r_orb, eta)
-        
-        v_K = np.sqrt(G * M_cp_kg / sat.r_orb)
-        Omega_K = v_K / sat.r_orb
-        
+                
         H_p = H_g * (1.0 + (st_p / alpha) * (1.0 + 2.0 * st_p) / (1.0 + st_p))**(-0.5)
         h_p = H_p / sat.r_orb
 
@@ -514,12 +548,31 @@ while t_year <= t_max_year:
         M_dot_s = local_M_dot_p * P_eff
         
         current_M_dot_p = current_M_dot_p - M_dot_s
+
+# 修正: ここでも局所の T_snow_local を使う
+        f_ice = 0.5 if T_d < T_snow_local else 0.0
+            
         
-        dRs_dt = M_dot_s / (4 * np.pi * sat.rho_s * sat.R_s**2)
+        dt_sec = dt_year * 365.25 * 24 * 3600
+        dM_s_total = M_dot_s * dt_sec
         
+        sat.next_M_ice = sat.M_ice + dM_s_total * f_ice
+        sat.next_M_rock = sat.M_rock + dM_s_total * (1.0 - f_ice)
+        sat.next_M_s = sat.next_M_ice + sat.next_M_rock
+        
+        # 体積から新しい半径と平均密度を逆算
+        V_next = (sat.next_M_ice / rho_ice) + (sat.next_M_rock / rho_rock)
+        sat.next_R_s = ((3.0 / (4.0 * np.pi)) * V_next)**(1.0 / 3.0)
+        sat.next_rho_s = sat.next_M_s / V_next
+        
+        # 降着するペブルの密度 (rho_in) を使って半径の成長速度を計算
+        rho_in = 1.0 / (f_ice / rho_ice + (1.0 - f_ice) / rho_rock) if f_ice > 0 else rho_rock
+        dRs_dt = M_dot_s / (4.0 * np.pi * rho_in * sat.R_s**2)
+                
         c_s = np.sqrt((k_B * T_d) / m_g)
         rho_g = Sigma_g / (np.sqrt(2.0 * np.pi) * H_g)
         P =rho_g * c_s**2
+
         # --- 追加: 大気質量と半径の計算 ---
         M_atm, R_out, R_B = calculate_atmosphere_mass(sat.M_s, sat.R_s, M_cp_kg, sat.r_orb, c_s, rho_g)
         St_s = calculate_satellite_stokes_number(C_D, sat.rho_s, sat.R_s, rho_g, eta, v_K, Omega_K)
@@ -578,6 +631,15 @@ while t_year <= t_max_year:
         sat.next_R_B = R_B
         sat.next_P_surf = P_surf_cgs
 
+        # --- 追加: 氷質量の獲得 ---
+        dM_s = sat.next_M_s - sat.M_s  # このステップで獲得した質量
+        
+        # スノーライン(T_snow)より外側なら、獲得したペブルの50%が氷だと仮定
+        if T_d < T_snow_local:
+            sat.next_M_ice = sat.M_ice + dM_s * 0.5
+        else:
+            sat.next_M_ice = sat.M_ice  # 氷は増えない  
+
     # --- ② 軌道共鳴チェック（内側の衛星から外側へ順番に判定） ---
     active_sats.sort(key=lambda s: s.r_orb)
     
@@ -599,6 +661,10 @@ while t_year <= t_max_year:
         
         # 状態を確定し、リストに記録
         sat.r_orb, sat.R_s, sat.M_s = sat.next_r_orb, sat.next_R_s, sat.next_M_s
+        sat.M_ice = sat.next_M_ice
+        sat.M_rock = sat.next_M_rock       
+        sat.rho_s = sat.next_rho_s
+
         sat.history_t.append(t_year)
         sat.history_Rs.append(sat.R_s / 100000.0)
         sat.history_r.append(sat.r_orb / R_J)
@@ -623,7 +689,38 @@ while t_year <= t_max_year:
 # 3. 計算終了後、結果を出力・グラフ化
 # ==========================================
 colors = ['tab:orange', 'tab:cyan', 'tab:blue', 'tab:gray', 'tab:magenta']
-"""
+
+# ---------------------------------------------------
+# 最終的な質量と氷質量分率の出力・保存
+# ---------------------------------------------------
+output_text = "=" * 40 + "\n"
+output_text += "計算終了時 (3000万年) の衛星の最終パラメータ\n"
+output_text += "=" * 40 + "\n"
+
+for sat in satellites:
+    # 質量を g から kg に変換
+    final_mass_kg = sat.M_s / 1000.0
+    
+    # 氷質量分率の計算 (前回追加した M_ice が実装されているか確認)
+    if hasattr(sat, 'M_ice'):
+        ice_frac = (sat.M_ice / sat.M_s) * 100.0
+        ice_str = f"{ice_frac:.1f} %"
+    else:
+        ice_str = "未計算 (M_iceの実装が必要です)"
+        
+    output_text += f"[{sat.name}]\n"
+    output_text += f"  最終質量   : {final_mass_kg:.3e} kg \n"
+    output_text += f"  氷質量分率 : {ice_str}\n"
+    output_text += f"  最終軌道   : {sat.r_orb / R_J:.2f} R_J\n"
+    output_text += "-" * 40 + "\n"
+
+# ターミナルに表示
+print(output_text)
+
+# テキストファイルとして保存
+with open("final_satellite_status.txt", "w", encoding="utf-8") as f:
+    f.write(output_text)
+
 # --- 1枚目: 軌道進化 (Orbital Evolution) ---
 plt.figure(figsize=(8, 5))  # 個別のグラフのサイズを指定
 for i, sat in enumerate(satellites):
@@ -695,17 +792,6 @@ plt.tight_layout()
 plt.savefig("disk_temp_beta.png")
 plt.close()
 
-# --- 追加: 固定軌道における円盤ガス温度 ---
-plt.figure(figsize=(8, 5))
-plt.plot(fixed_history_t, fixed_history_Td, color='tab:red', linewidth=2)
-plt.ylabel('Disk Midplane Temp T_d (K)')
-plt.xlabel('Time (Years)')
-plt.title(f'固定軌道 ({target_fixed_r/R_J} R_J) における円盤ガス温度')
-plt.xscale('log')
-plt.tight_layout()
-plt.savefig("fixed_orbit_Td_beta.png")
-plt.close()
-
 # --- 追加: ぺブル集積効率 ---
 plt.figure(figsize=(8, 5))
 for i, sat in enumerate(satellites):
@@ -747,8 +833,7 @@ plt.legend()
 plt.tight_layout()
 plt.savefig("u_i_beta.png")
 plt.close()                 # メモリを解放して次のキャンバスへ
-"""
-"""
+
 # --- 
 plt.figure(figsize=(8, 5))
 for i, sat in enumerate(satellites):
@@ -911,7 +996,7 @@ ax1.legend(lines_1 + lines_2, labels_1 + labels_2, fontsize=10, loc='lower right
 plt.tight_layout()
 plt.savefig("pebble_migration_time_vs_r.png")
 plt.close()
-"""
+
 # --- 追加: ボンディ半径と衛星半径の比較 (大気獲得判定) ---
 plt.figure(figsize=(10, 6))
 for i, sat in enumerate(satellites):
