@@ -837,7 +837,7 @@ for sat in satellites:
 print(output_text)
 
 # テキストファイルとして保存
-with open("final_satellite_status.txt", "w", encoding="utf-8") as f:
+with open("final_satellite_status_central_flax.txt", "w", encoding="utf-8") as f:
     f.write(output_text)
 
 # --- 1枚目: 軌道進化 (Orbital Evolution) ---
@@ -1218,7 +1218,7 @@ plt.legend(fontsize=10, ncol=2, loc='lower left')
 plt.grid(True, which="both", linestyle=":", alpha=0.7)
 
 plt.tight_layout()
-plt.savefig("snowline_all_satellites_fixed_orbits.png")
+plt.savefig("Evolution_of_Tempreatures_all_satellites_fixed_orbits.png")
 plt.close()
 
 # ==========================================

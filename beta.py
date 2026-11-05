@@ -137,7 +137,7 @@ def calculate_st_p(p, q, M_dot_p, M_dot_g, alpha, T_d, M_cp_kg, r, eta, frag_lim
     M_cp_MJ = M_cp_kg / M_J
     r_RJ = r / R_J
 
-    coef = 0.23
+    coef = 0.21
     term_p_q1 = (2.0 / (3.0 + 2.0 * p + q))**(4/5)
     term_p_q2 = (abs(10.0 / (18.0 - 13.0 * q)))**(2/5)
 
@@ -442,7 +442,7 @@ class Satellite:
         self.history_R_B = []
         self.history_P_surf = []
 # シミュレーションの初期設定
-t_year = 1.0             # イオが捕獲される時間からスタート
+t_year = 1.0e6             # イオが捕獲される時間からスタート
 dt_year = 1000.0            # タイムステップ
 t_max_year = 3.0e7         # 3000万年
 
@@ -718,7 +718,7 @@ for sat in satellites:
 print(output_text)
 
 # テキストファイルとして保存
-with open("final_satellite_status.txt", "w", encoding="utf-8") as f:
+with open("final_satellite_status_beta.txt", "w", encoding="utf-8") as f:
     f.write(output_text)
 
 # --- 1枚目: 軌道進化 (Orbital Evolution) ---
@@ -1067,4 +1067,37 @@ plt.axhline(y=101325, color='gray', linestyle='--', linewidth=1, label='1 atm (E
 plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
 plt.tight_layout()
 plt.savefig("surface_pressure_evolution.png")
+plt.close()
+
+# --- 各衛星軌道における温度 ---
+plt.figure(figsize=(10, 6))
+
+orbit_colors = {
+    "Io": "tab:orange",
+    "Europa": "tab:cyan",
+    "Ganymede": "tab:blue",
+    "Callisto": "tab:gray"
+}
+
+for name in fixed_orbits.keys():
+    hist = fixed_histories[name]
+    col = orbit_colors[name]
+    
+    if len(hist['t']) > 0:
+        # 実線: 円盤温度 T_d
+        plt.plot(hist['t'], hist['Td'], color=col, linestyle='-', linewidth=2, label=f"{name} ($T_d$)")
+        # 破線: 凝縮温度 T_con
+        plt.plot(hist['t'], hist['T_snow'], color=col, linestyle='--', linewidth=2, label=f"{name} ($T_{{con}}$)")
+
+plt.xlabel("Time [years]", fontsize=14)
+plt.ylabel("Temperature [K]", fontsize=14)
+plt.title("Evolution of Temperatures at Fixed Orbits", fontsize=16)
+plt.xscale("log") 
+
+# 凡例を2列にして配置
+plt.legend(fontsize=10, ncol=2, loc='lower left')
+plt.grid(True, which="both", linestyle=":", alpha=0.7)
+
+plt.tight_layout()
+plt.savefig("Evolution_of_Temperatures_all_satellites_fixed_orbits_beta.png")
 plt.close()
