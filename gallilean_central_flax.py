@@ -28,6 +28,7 @@ L_sun_early = 0.70 * L_sun # 形成初期の太陽光度 (現在の75%)
 T_bg = (L_sun_early / (16.0 * np.pi * a_J**2 * sigma_sb))**0.25 # 太陽輻射による木星軌道付近の平衡温度 
 rho_ice = 1.4              # 氷の密度 (g/cm^3)
 rho_rock = 3.0             # 岩石の密度 (g/cm^3)
+rho_int= 1.0e-3                # ふわふわのダストの密度 (g/cm^3)
 
 # ==========================================
 # 事前準備：物理量を計算する関数群
@@ -216,58 +217,78 @@ def calculate_disk_mass(M_cp_kg, M_dot_g_kg_s, alpha, r_gg, L_cp):
     return mass_g / M_J
 
 
-# ぺブルのストークス数 (St_p) を計算する関数（破壊効果を追加）
-def calculate_st_p(p, q, M_dot_p, M_dot_g, alpha, T_d, M_cp_kg, r, eta):
-    # 0割り防止
-    if M_dot_g <= 0: return 1e-10
+# ---------------------------------------------------------
+# 【変更】ペブルのバトンパス方式に対応したストークス数計算関数
+# ---------------------------------------------------------
+def calculate_st_p_integrated_relay(M_cp_kg, M_dot_g_kg_s, alpha, r_gg, L_cp, local_M_dot_p, target_r, start_r, start_R_d, rho_int=0.1):
+    if M_dot_g_kg_s <= 1e-15 or local_M_dot_p <= 1e-15:
+        return 1e-10, start_R_d
 
-    # 1. 動径移動による限界 (Drift-limited)
-    M_cp_MJ = M_cp_kg / M_J
-    r_RJ = r / R_J
+    # 距離が近い（あるいは追い越している）場合は積分せずそのまま返す
+    if target_r >= start_r:
+        R_d = start_R_d
+    else:
+        # 衛星と衛星の間の短い距離だけを積分するので、ステップ数は 10 回
+        N_steps = 10 
+        r_grid = np.logspace(np.log10(start_r), np.log10(target_r), N_steps)
+        R_d = start_R_d
+        
+        for i in range(N_steps - 1):
+            r_curr = r_grid[i]
+            r_next = r_grid[i+1]
+            dr = r_next - r_curr
+            
+            p, q = calculate_p_q(M_cp_kg, M_dot_g_kg_s, r_curr, alpha, r_gg, L_cp)
+            T_d, Sigma_g = calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, r_curr, alpha, r_gg, L_cp, q_guess=q)
+            if np.isnan(T_d): continue
+                
+            v_K = np.sqrt(G * M_cp_kg / r_curr)
+            Omega_K = v_K / r_curr
+            c_s = np.sqrt((k_B * T_d) / m_g)
+            H_g = c_s / Omega_K
+            eta, _ = calculate_eta(M_cp_kg, M_dot_g_kg_s, r_curr, alpha, r_gg, L_cp)
+            eta_safe = max(abs(eta), 1e-15)
+            
+            term_num = local_M_dot_p * (Sigma_g**0.25)
+            term_den = ( (2.0**(39.0/8.0)) * (np.pi**(13.0/8.0)) * (alpha**0.5) * 
+                         (rho_int**1.25) * (eta_safe**0.75) * v_K * (H_g**1.25) * (r_curr**0.75) )
+            F_r = term_num / term_den
+            
+            dR_d_54 = - (5.0 / 4.0) * F_r * dr
+            R_d_54_next = (R_d**1.25) + dR_d_54
+            
+            if R_d_54_next > 0:
+                R_d = R_d_54_next**(0.8)
 
-    coef = 0.23
-    term_p_q1 = (2.0 / (3.0 + 2.0 * p + q))**(4/5)
-    term_p_q2 = (abs(10.0 / (18.0 - 13.0 * q)))**(2/5)
-
-    M_dot_ratio = M_dot_p / M_dot_g
-    term_mdot = (M_dot_ratio / 0.003)**(2/5)
-    term_alpha = (alpha / 1e-4)**(1/5)
-    term_td = (T_d / 160.0)**(-2/5)
-    term_mcp = (M_cp_MJ / 1.0)**(2/5)
-    term_r = (r_RJ / 10.0)**(-2/5)
-
-    st_p_drift = coef * term_p_q1 * term_p_q2 * term_mdot * term_alpha * term_td * term_mcp * term_r
-
-    # 2. 衝突破壊による限界 (Fragmentation-limited) - 論文の式(14)
+    # --- ストークス数の計算 ---
+    p, q = calculate_p_q(M_cp_kg, M_dot_g_kg_s, target_r, alpha, r_gg, L_cp)
+    T_d, Sigma_g = calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, target_r, alpha, r_gg, L_cp, q_guess=q)
+    v_K = np.sqrt(G * M_cp_kg / target_r)
+    Omega_K = v_K / target_r
     c_s = np.sqrt((k_B * T_d) / m_g)
-    Omega_K = np.sqrt(G * M_cp_kg / r**3)
-    eta_safe = max(abs(eta), 1e-15) # ゼロ割り回避
-
-    # --- 動的スノーラインの計算 ---
-    H_g_temp = c_s / Omega_K
-    Sigma_g_temp = (M_dot_g / Omega_K) / (3.0 * np.pi * alpha * c_s**2)
-    rho_g_temp = Sigma_g_temp / (np.sqrt(2.0 * np.pi) * H_g_temp)
-    P_gas_temp = rho_g_temp * c_s**2
+    H_g = c_s / Omega_K
+    eta, _ = calculate_eta(M_cp_kg, M_dot_g_kg_s, target_r, alpha, r_gg, L_cp)
+    eta_safe = max(abs(eta), 1e-15)
     
+    St_sq = (8.0 * np.sqrt(2.0 * np.pi) / 3.0) * (rho_int * H_g * R_d) / (Sigma_g * eta_safe * target_r)
+    st_p_drift = np.sqrt(max(St_sq, 1e-20))
+    
+    rho_g_temp = Sigma_g / (np.sqrt(2.0 * np.pi) * H_g)
+    P_gas_temp = rho_g_temp * c_s**2
     X_H2O = 1.7e-4
     P_H2O = max(X_H2O * P_gas_temp, 1e-20)
     T_snow = 6070.0 / (30.86 - np.log(P_H2O))
 
-    # スノーラインを境に限界衝突速度(v_cr)を変更
-    if T_d >= T_snow:
-        v_cr = 500.0   # 岩石ペブルの破壊速度 (cm/s)
-    else:
-        v_cr = 5000.0  # 氷ペブルの破壊速度 (cm/s)
-
+    v_cr = 500.0 if T_d >= T_snow else 5000.0
     term_a = -3.0 * alpha * c_s**2
-    term_b = np.sqrt(9.0 * alpha**2 * c_s**4 + 4.0 * eta_safe**2 * r**2 * Omega_K**2 * v_cr**2)
-    term_c = 2.0 * eta_safe**2 * r**2 * Omega_K**2
-
+    term_b = np.sqrt(9.0 * alpha**2 * c_s**4 + 4.0 * eta_safe**2 * target_r**2 * Omega_K**2 * v_cr**2)
+    term_c = 2.0 * eta_safe**2 * target_r**2 * Omega_K**2
     st_p_frag = (term_a + term_b) / term_c
 
-    # ドリフトと破壊のうち、より小さい（厳しい）制限を採用する
     st_p = min(st_p_drift, st_p_frag)
-    return st_p
+    
+    # ★ ストークス数と、次の衛星へ渡すための「育ったペブルの半径」の両方を返す
+    return st_p, R_d
 
 # 圧力勾配によるずれ（eta）を計算する関数
 def calculate_eta(M_cp_kg, M_dot_g_kg_s, r, alpha, r_gg, L_cp):
@@ -617,6 +638,10 @@ while t_year <= t_max_year:
     active_sats.sort(key=lambda s: s.r_orb, reverse=True)
     
     current_M_dot_p = M_dot_p_base
+
+    # ★ 追加: ペブルの初期状態（円盤外縁）をセット
+    current_pebble_r = 50.0 * R_J
+    current_pebble_Rd = 1e-2
     
     # --- ① 物理計算（外側から順番にペブルを横取りしていく） ---
     for sat in active_sats:
@@ -641,7 +666,17 @@ while t_year <= t_max_year:
        
         eta, H_g = calculate_eta(M_cp_kg, M_dot_g_kg_s, sat.r_orb, alpha, r_gg, L_cp)
         
-        st_p = calculate_st_p(p, q, local_M_dot_p, M_dot_g_kg_s, alpha, T_d, M_cp_kg, sat.r_orb, eta)
+        # ★ 修正: 前の場所(current_pebble_r)から自分の場所(sat.r_orb)までだけ計算してバトンを受け取る
+        st_p, new_pebble_Rd = calculate_st_p_integrated_relay(
+            M_cp_kg, M_dot_g_kg_s, alpha, r_gg, L_cp, local_M_dot_p,
+            target_r=sat.r_orb,
+            start_r=current_pebble_r, 
+            start_R_d=current_pebble_Rd,
+        )
+        
+        # ★ 追加: 次の内側の衛星のためにバトン（現在地とペブル半径）を更新
+        current_pebble_r = sat.r_orb
+        current_pebble_Rd = new_pebble_Rd
         
         # （...中略: H_p や P_eff などの計算...）
         H_p = H_g * (1.0 + (st_p / alpha) * (1.0 + 2.0 * st_p) / (1.0 + st_p))**(-0.5)
