@@ -220,7 +220,7 @@ def calculate_disk_mass(M_cp_kg, M_dot_g_kg_s, alpha, r_gg, L_cp):
 # ---------------------------------------------------------
 # 【変更】ペブルのバトンパス方式に対応したストークス数計算関数
 # ---------------------------------------------------------
-def calculate_st_p_integrated_relay(M_cp_kg, M_dot_g_kg_s, alpha, r_gg, L_cp, local_M_dot_p, target_r, start_r, start_R_d, rho_int=0.1):
+def calculate_st_p_integrated_relay(M_cp_kg, M_dot_g_kg_s, alpha, r_gg, L_cp, local_M_dot_p, target_r, start_r, start_R_d, rho_int):
     if M_dot_g_kg_s <= 1e-15 or local_M_dot_p <= 1e-15:
         return 1e-10, start_R_d
 
@@ -248,7 +248,17 @@ def calculate_st_p_integrated_relay(M_cp_kg, M_dot_g_kg_s, alpha, r_gg, L_cp, lo
             H_g = c_s / Omega_K
             eta, _ = calculate_eta(M_cp_kg, M_dot_g_kg_s, r_curr, alpha, r_gg, L_cp)
             eta_safe = max(abs(eta), 1e-15)
+
+            # ★ 修正: 積分道中 (r_curr) での局所的なスノーラインを判定
+            rho_g_curr = Sigma_g / (np.sqrt(2.0 * np.pi) * H_g)
+            P_gas_curr = rho_g_curr * c_s**2
+            X_H2O = 1.7e-4
+            P_H2O_curr = max(X_H2O * P_gas_curr, 1e-20)
+            T_snow_curr = 6070.0 / (30.86 - np.log(P_H2O_curr))
             
+            # 道中の環境が雪線より内側ならフラックスを半分にして成長を計算
+            local_M_dot_p_curr = current_M_dot_p * 0.5 if T_d >= T_snow_curr else current_M_dot_p
+
             term_num = local_M_dot_p * (Sigma_g**0.25)
             term_den = ( (2.0**(39.0/8.0)) * (np.pi**(13.0/8.0)) * (alpha**0.5) * 
                          (rho_int**1.25) * (eta_safe**0.75) * v_K * (H_g**1.25) * (r_curr**0.75) )
@@ -668,16 +678,17 @@ while t_year <= t_max_year:
         
         # ★ 修正: 前の場所(current_pebble_r)から自分の場所(sat.r_orb)までだけ計算してバトンを受け取る
         st_p, new_pebble_Rd = calculate_st_p_integrated_relay(
-            M_cp_kg, M_dot_g_kg_s, alpha, r_gg, L_cp, local_M_dot_p,
+            M_cp_kg, M_dot_g_kg_s, alpha, r_gg, L_cp, current_M_dot_p,
             target_r=sat.r_orb,
             start_r=current_pebble_r, 
             start_R_d=current_pebble_Rd,
+            rho_int=rho_int
         )
         
         # ★ 追加: 次の内側の衛星のためにバトン（現在地とペブル半径）を更新
         current_pebble_r = sat.r_orb
         current_pebble_Rd = new_pebble_Rd
-        
+
         # （...中略: H_p や P_eff などの計算...）
         H_p = H_g * (1.0 + (st_p / alpha) * (1.0 + 2.0 * st_p) / (1.0 + st_p))**(-0.5)
         h_p = H_p / sat.r_orb
@@ -687,8 +698,13 @@ while t_year <= t_max_year:
         P_eff = calculate_P_eff(mu_s, delta_v, v_K, st_p, eta, h_p)
         
         M_dot_s = local_M_dot_p * P_eff
-        current_M_dot_p = current_M_dot_p - M_dot_s
-        
+
+        # スノーラインの内側なら、フラックスを半分（岩石のみ）にする
+        local_M_dot_p = current_M_dot_p * 0.5 if T_d >= T_snow_local else current_M_dot_p
+
+        # その半分に減った岩石フラックスをベースに、捕獲量 M_dot_s を計算する
+        M_dot_s = local_M_dot_p * P_eff
+
         # 修正: ここでも局所の T_snow_local を使う
         f_ice = 0.5 if T_d < T_snow_local else 0.0
             
