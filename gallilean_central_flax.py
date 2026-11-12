@@ -598,7 +598,7 @@ satellites = [
     Satellite("Io",       1.00e6, 50.0 * R_J),
     Satellite("Europa",   1.25e6, 50.0 * R_J),
     Satellite("Ganymede", 1.50e6, 50.0 * R_J),
-    Satellite("Callisto", 2.00e6, 50.0 * R_J)
+    Satellite("Callisto", 1.70e6, 50.0 * R_J)
 ]
 
 # ==========================================
