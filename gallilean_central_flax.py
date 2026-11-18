@@ -28,9 +28,10 @@ L_sun_early = 0.70 * L_sun # 形成初期の太陽光度 (現在の75%)
 T_bg = (L_sun_early / (16.0 * np.pi * a_J**2 * sigma_sb))**0.25 # 太陽輻射による木星軌道付近の平衡温度 
 rho_ice = 1.4              # 氷の密度 (g/cm^3)
 rho_rock = 3.0             # 岩石の密度 (g/cm^3)
-rho_int= 1.0e-3                # ふわふわのダストの密度 (g/cm^3)
+rho_int= 1.4e-1                # ふわふわのダストの密度 (g/cm^3)
 
-# ==========================================
+# ====================
+# ======================
 # 事前準備：物理量を計算する関数群
 # ==========================================
 
@@ -220,8 +221,8 @@ def calculate_disk_mass(M_cp_kg, M_dot_g_kg_s, alpha, r_gg, L_cp):
 # ---------------------------------------------------------
 # 【変更】ペブルのバトンパス方式に対応したストークス数計算関数
 # ---------------------------------------------------------
-def calculate_st_p_integrated_relay(M_cp_kg, M_dot_g_kg_s, alpha, r_gg, L_cp, local_M_dot_p, target_r, start_r, start_R_d, rho_int):
-    if M_dot_g_kg_s <= 1e-15 or local_M_dot_p <= 1e-15:
+def calculate_st_p_integrated_relay(M_cp_kg, M_dot_g_kg_s, alpha, r_gg, L_cp, current_M_dot_p, target_r, start_r, start_R_d, rho_int):
+    if M_dot_g_kg_s <= 1e-15 or current_M_dot_p <= 1e-15:
         return 1e-10, start_R_d
 
     # 距離が近い（あるいは追い越している）場合は積分せずそのまま返す
@@ -257,9 +258,9 @@ def calculate_st_p_integrated_relay(M_cp_kg, M_dot_g_kg_s, alpha, r_gg, L_cp, lo
             T_snow_curr = 6070.0 / (30.86 - np.log(P_H2O_curr))
             
             # 道中の環境が雪線より内側ならフラックスを半分にして成長を計算
-            local_M_dot_p_curr = current_M_dot_p * 0.5 if T_d >= T_snow_curr else current_M_dot_p
+            current_M_dot_p_curr = current_M_dot_p * 0.5 if T_d >= T_snow_curr else current_M_dot_p
 
-            term_num = local_M_dot_p * (Sigma_g**0.25)
+            term_num = current_M_dot_p_curr * (Sigma_g**0.25)
             term_den = ( (2.0**(39.0/8.0)) * (np.pi**(13.0/8.0)) * (alpha**0.5) * 
                          (rho_int**1.25) * (eta_safe**0.75) * v_K * (H_g**1.25) * (r_curr**0.75) )
             F_r = term_num / term_den
@@ -648,6 +649,7 @@ while t_year <= t_max_year:
     active_sats.sort(key=lambda s: s.r_orb, reverse=True)
     
     current_M_dot_p = M_dot_p_base
+    
 
     # ★ 追加: ペブルの初期状態（円盤外縁）をセット
     current_pebble_r = 50.0 * R_J
@@ -661,6 +663,7 @@ while t_year <= t_max_year:
         if np.isnan(T_d): continue
 
         # ★ 追加・修正: 衛星の現在位置における「局所的なスノーライン温度 (T_snow_local)」を計算
+        
         v_K = np.sqrt(G * M_cp_kg / sat.r_orb)
         Omega_K = v_K / sat.r_orb
         c_s_local = np.sqrt((k_B * T_d) / m_g)
@@ -671,9 +674,6 @@ while t_year <= t_max_year:
         P_H2O_local = max(X_H2O * P_gas_local, 1e-20)
         T_snow_local = 6070.0 / (30.86 - np.log(P_H2O_local))
             
-        # 修正: 全体共通の T_snow_val ではなく、局所の T_snow_local を使う
-        local_M_dot_p = current_M_dot_p * 0.5 if T_d >= T_snow_local else current_M_dot_p
-       
         eta, H_g = calculate_eta(M_cp_kg, M_dot_g_kg_s, sat.r_orb, alpha, r_gg, L_cp)
         
         # ★ 修正: 前の場所(current_pebble_r)から自分の場所(sat.r_orb)までだけ計算してバトンを受け取る
@@ -696,14 +696,21 @@ while t_year <= t_max_year:
         mu_s = calculate_mu_s(sat.M_s, M_cp_kg)
         delta_v = calculate_delta_v(mu_s, eta, st_p, v_K)
         P_eff = calculate_P_eff(mu_s, delta_v, v_K, st_p, eta, h_p)
-        
-        M_dot_s = local_M_dot_p * P_eff
 
-        # スノーラインの内側なら、フラックスを半分（岩石のみ）にする
+        # ★ 追加必須: 雪線の内側なら、現場のフラックスを半分（岩石のみ）にする！
         local_M_dot_p = current_M_dot_p * 0.5 if T_d >= T_snow_local else current_M_dot_p
-
-        # その半分に減った岩石フラックスをベースに、捕獲量 M_dot_s を計算する
+        
+        # 現場のフラックスをベースに、捕獲量 M_dot_s を計算する
         M_dot_s = local_M_dot_p * P_eff
+
+        # ★ 修正: 奪われたペブル分を全体の基準フラックス(current_M_dot_p)から引く際の論理
+        # 雪線より内側で純粋な岩石を M_dot_s 奪った場合、氷を含めた全体の基準フラックスとしては 2倍 減らすのが物理的に正しい
+        if T_d >= T_snow_local:
+            current_M_dot_p = current_M_dot_p - (M_dot_s * 2.0)
+        else:
+            current_M_dot_p = current_M_dot_p - M_dot_s
+
+        
 
         # 修正: ここでも局所の T_snow_local を使う
         f_ice = 0.5 if T_d < T_snow_local else 0.0
@@ -1120,7 +1127,7 @@ for t_snap, col in zip(snapshot_times, colors_snap):
     valid_r_RJ = []
 
     for r_val in r_array:
-        p, q = calculate_p_q(M_cp_kg, M_dot_g_kg_s, r_val, alpha, r_gg L_cp)
+        p, q = calculate_p_q(M_cp_kg, M_dot_g_kg_s, r_val, alpha, r_gg, L_cp)
         T_d, Sigma_g = calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, r_val, alpha, r_gg, L_cp, q_guess=q)
 
         if np.isnan(T_d):
