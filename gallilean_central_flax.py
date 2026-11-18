@@ -28,7 +28,7 @@ L_sun_early = 0.70 * L_sun # 形成初期の太陽光度 (現在の75%)
 T_bg = (L_sun_early / (16.0 * np.pi * a_J**2 * sigma_sb))**0.25 # 太陽輻射による木星軌道付近の平衡温度 
 rho_ice = 1.4              # 氷の密度 (g/cm^3)
 rho_rock = 3.0             # 岩石の密度 (g/cm^3)
-rho_int= 1.4e-1                # ふわふわのダストの密度 (g/cm^3)
+rho_int= 1.4e-1                # ダストの内部密度 (g/cm^3)
 
 # ====================
 # ======================
@@ -240,7 +240,7 @@ def calculate_st_p_integrated_relay(M_cp_kg, M_dot_g_kg_s, alpha, r_gg, L_cp, cu
             dr = r_next - r_curr
             
             p, q = calculate_p_q(M_cp_kg, M_dot_g_kg_s, r_curr, alpha, r_gg, L_cp)
-            T_d, Sigma_g = calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, r_curr, alpha, r_gg, L_cp, q_guess=q)
+            T_d, Sigma_g = calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, r_curr, alpha, r_gg, L_cp, q_guess=0.5)
             if np.isnan(T_d): continue
                 
             v_K = np.sqrt(G * M_cp_kg / r_curr)
@@ -699,7 +699,7 @@ while t_year <= t_max_year:
 
         # ★ 追加必須: 雪線の内側なら、現場のフラックスを半分（岩石のみ）にする！
         local_M_dot_p = current_M_dot_p * 0.5 if T_d >= T_snow_local else current_M_dot_p
-        
+
         # 現場のフラックスをベースに、捕獲量 M_dot_s を計算する
         M_dot_s = local_M_dot_p * P_eff
 
@@ -739,7 +739,6 @@ while t_year <= t_max_year:
 
  # --- 追加: 大気質量と半径の計算 ---
         M_atm, R_out, R_B = calculate_atmosphere_mass(sat.M_s, sat.R_s, M_cp_kg, sat.r_orb, c_s, rho_g)
-        St_s = calculate_satellite_stokes_number(C_D, sat.rho_s, sat.R_s, rho_g, eta, v_K, Omega_K)
         
         # ★ 追加: 表面大気圧の計算 (P_surf = rho(R_s) * c_s^2)
         if R_out > sat.R_s:
@@ -781,7 +780,6 @@ while t_year <= t_max_year:
         sat.next_r_orb = sat.r_orb + v_mig * (dt_year * 365.25 * 24 * 3600)
        #sat.next_R_s = sat.R_s + dRs_dt * (dt_year * 365.25 * 24 * 3600)
         sat.next_Ts = Ts_strict
-        sat.next_M_s = (4.0 / 3.0) * np.pi * sat.next_R_s**3 * sat.rho_s
         sat.next_b_t1 = b_t1
         sat.next_T_d = T_d
         sat.next_P_eff = P_eff
@@ -799,14 +797,6 @@ while t_year <= t_max_year:
         sat.next_R_B = R_B
         sat.next_P_surf = P_surf_cgs
 
-        # --- 追加: 氷質量の獲得 ---
-        dM_s = sat.next_M_s - sat.M_s  # このステップで獲得した質量
-        
-        # スノーライン(T_snow)より外側なら、獲得したペブルの50%が氷だと仮定
-        if T_d < T_snow_local:
-            sat.next_M_ice = sat.M_ice + dM_s * 0.5
-        else:
-            sat.next_M_ice = sat.M_ice  # 氷は増えない
 
     # --- ② 軌道共鳴チェック（内側の衛星から外側へ順番に判定） ---
     active_sats.sort(key=lambda s: s.r_orb)
