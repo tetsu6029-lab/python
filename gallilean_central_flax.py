@@ -28,7 +28,7 @@ L_sun_early = 0.70 * L_sun # 形成初期の太陽光度 (現在の75%)
 T_bg = (L_sun_early / (16.0 * np.pi * a_J**2 * sigma_sb))**0.25 # 太陽輻射による木星軌道付近の平衡温度 
 rho_ice = 1.4              # 氷の密度 (g/cm^3)
 rho_rock = 3.0             # 岩石の密度 (g/cm^3)
-rho_int= 1.4e-1                # ダストの内部密度 (g/cm^3)
+rho_int= 1.4e-3                # ダストの内部密度 (g/cm^3)
 
 # ====================
 # ======================
@@ -553,7 +553,7 @@ class Satellite:
         self.R_s = 3.35e7         # 初期半径 (cm)
         self.rho_s = 1.9       # 密度 (cm/g)
         self.M_s = (4.0/3.0) * np.pi * self.R_s**3 * self.rho_s
-        # ★ 追加: 蓄積された氷の総質量（初期の種は純粋な岩石と仮定）
+        # ★ 追加: 蓄積された氷の総質量（初期の種は氷と岩石半々と仮定）
         self.M_ice = self.M_s * 0.5
         self.M_rock = self.M_s * 0.5  
         
