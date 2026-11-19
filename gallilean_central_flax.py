@@ -28,7 +28,7 @@ L_sun_early = 0.70 * L_sun # 形成初期の太陽光度 (現在の75%)
 T_bg = (L_sun_early / (16.0 * np.pi * a_J**2 * sigma_sb))**0.25 # 太陽輻射による木星軌道付近の平衡温度 
 rho_ice = 1.4              # 氷の密度 (g/cm^3)
 rho_rock = 3.0             # 岩石の密度 (g/cm^3)
-rho_int= 1.4e-3                # ダストの内部密度 (g/cm^3)
+rho_int= 1.4e-1                # ダストの内部密度 (g/cm^3)
 
 # ====================
 # ======================
@@ -599,7 +599,7 @@ satellites = [
     Satellite("Io",       1.00e6, 50.0 * R_J),
     Satellite("Europa",   1.25e6, 50.0 * R_J),
     Satellite("Ganymede", 1.50e6, 50.0 * R_J),
-    Satellite("Callisto", 1.70e6, 50.0 * R_J)
+    Satellite("Callisto", 1.7e6, 50.0 * R_J)
 ]
 
 # ==========================================
@@ -1258,7 +1258,7 @@ for name in fixed_orbits.keys():
 
 plt.xlabel("Time [years]", fontsize=14)
 plt.ylabel("Temperature [K]", fontsize=14)
-plt.title("Evolution of Temperatures at Fixed Orbits", fontsize=16)
+plt.title("Evolution of Temperatures at Fixed Orbits central.png", fontsize=16)
 plt.xscale("log") 
 
 # 凡例を2列にして配置
@@ -1333,3 +1333,89 @@ plt.grid(True, which="both", linestyle=":", alpha=0.7)
 plt.tight_layout()
 plt.savefig("tau_evolution_ganymede_comparison.png")
 
+
+# ==========================================
+# 追加: 軌道半径に対するペブル半径の空間分布（4時刻の比較）
+# ==========================================
+snapshot_times_Rd = [1.0e6, 3.0e6, 1.0e7, 3.0e7]  # 比較する4つの時刻 [yr]
+colors_Rd = ['tab:purple', 'tab:green', 'tab:cyan', 'tab:orange']
+
+# 外側 (50 R_J) から内側 (1 R_J) へ向かう軌道半径の配列（降順）
+r_array_RJ_desc = np.logspace(np.log10(50.0), np.log10(1.0), 60)
+r_array_desc = r_array_RJ_desc * R_J
+
+plt.figure(figsize=(9, 6))
+
+for t_snap, col in zip(snapshot_times_Rd, colors_Rd):
+    M_cp_MJ_s = calculate_M_cp(t_snap, t_gap)
+    M_cp_kg_s = M_cp_MJ_s * M_J
+    M_dot_g_kg_s_s = calculate_mdot_g(t_snap, t_gap) * M_J / (365.25 * 24 * 3600)
+    M_dot_p_s = x * M_dot_g_kg_s_s
+    L_cp_s = calculate_L_cp(t_snap, t_gap)
+
+    # 外縁 (50 R_J) でのペブル初期状態
+    curr_r = 50.0 * R_J
+    curr_Rd = 1e-2  # 初期半径 [cm]
+
+    valid_r_RJ = []
+    Rd_eff_list = []
+
+    for r_val in r_array_desc:
+        # 1つ外側のグリッド点から r_val までバトンパス方式で成長を積分
+        st_p_val, next_Rd = calculate_st_p_integrated_relay(
+            M_cp_kg_s, M_dot_g_kg_s_s, alpha, r_gg, L_cp_s, M_dot_p_s,
+            target_r=r_val,
+            start_r=curr_r,
+            start_R_d=curr_Rd,
+            rho_int=rho_int
+        )
+
+        # 次の内側グリッド用にバトンを更新
+        curr_r = r_val
+        curr_Rd = next_Rd
+
+        # 破壊限界 (st_p_frag) を考慮した実効的なペブル半径を st_p から逆算
+        _, q_val = calculate_p_q(M_cp_kg_s, M_dot_g_kg_s_s, r_val, alpha, r_gg, L_cp_s)
+        T_d_val, Sigma_g_val = calculate_disk_structure(
+            M_cp_kg_s, M_dot_g_kg_s_s, r_val, alpha, r_gg, L_cp_s, q_guess=q_val
+        )
+        if np.isnan(T_d_val):
+            continue
+
+        Omega_K_val = np.sqrt(G * M_cp_kg_s / r_val**3)
+        c_s_val = np.sqrt((k_B * T_d_val) / m_g)
+        H_g_val = c_s_val / Omega_K_val
+        eta_val, _ = calculate_eta(M_cp_kg_s, M_dot_g_kg_s_s, r_val, alpha, r_gg, L_cp_s)
+        eta_safe_val = max(abs(eta_val), 1e-15)
+
+        # St^2 = (8*sqrt(2*pi)/3) * (rho_int * H_g * R_d) / (Sigma_g * eta * r) より R_d を逆算
+        Rd_eff = (st_p_val**2) * (3.0 * Sigma_g_val * eta_safe_val * r_val) / (
+            8.0 * np.sqrt(2.0 * np.pi) * rho_int * H_g_val
+        )
+
+        valid_r_RJ.append(r_val / R_J)
+        Rd_eff_list.append(Rd_eff)
+
+    plt.plot(
+        valid_r_RJ, Rd_eff_list,
+        label=f't = {t_snap/1e6:.0f} Myr',
+        color=col, linewidth=2
+    )
+plt.xscale('log')
+plt.yscale('log')
+# 参考：現在のガリレオ衛星の軌道位置を縦線で表示
+for name, r_fix in fixed_orbits.items():
+    plt.axvline(x=r_fix / R_J, color='gray', linestyle=':', alpha=0.6)
+    plt.text(r_fix / R_J, plt.ylim()[0], name, rotation=90,
+             verticalalignment='bottom', horizontalalignment='right', fontsize=9, color='gray')
+
+
+plt.xlabel('Orbital Radius ($R_J$)', fontsize=14)
+plt.ylabel('Pebble Radius $R_d$ (cm)', fontsize=14)
+plt.title('軌道半径に対するペブル半径の進化', fontsize=16)
+plt.xticks([1, 2, 5, 10, 20, 50], ['1', '2', '5', '10', '20', '50'], fontsize=12)
+plt.legend(fontsize=12)
+plt.grid(True, which="both", linestyle=":", alpha=0.7)
+plt.tight_layout()
+plt.savefig("pebble_radius_vs_r_central_flux.png")
+plt.close()
