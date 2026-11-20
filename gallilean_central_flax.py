@@ -77,9 +77,11 @@ def calculate_L_cp(t, t_gap):
 
 # 円盤ガスの中面温度（T_d）、面密度を計算する関数
 # q_guess: 温度勾配の推定値（放射優勢円盤の標準値 0.5 をデフォルトとする）
-def calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, r, alpha, r_gg, L_cp, q_guess=0.5):
+def calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, r, alpha, r_gg, L_cp, q_guess=0.5, return_components=False):
     # ガス枯渇時の安全装置
     if M_dot_g_kg_s <= 1e-15:
+        if return_components:
+            return 10.0, 1e-15, 0.0, 0.0, T_bg
         return 10.0, 1e-15
 
     Omega_K = np.sqrt(G * M_cp_kg / r**3)
@@ -147,6 +149,35 @@ def calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, r, alpha, r_gg, L_cp, q_gues
         
     c_s_final = np.sqrt((k_B * T_d_solution) / m_g)
     Sigma_g_final = (M_dot_g_kg_s * Omega_K) / (3.0 * np.pi * alpha * c_s_final**2)
+
+    # ★ 追加: 各加熱成分を返すモード
+    if return_components:
+        H_g_final = c_s_final / Omega_K
+        rho_g_final = Sigma_g_final / (np.sqrt(2.0 * np.pi) * H_g_final)
+        P_gas_final = rho_g_final * c_s_final**2
+        
+        X_H2O = 1.7e-4
+        P_H2O_final = max(X_H2O * P_gas_final, 1e-20)
+        T_snow_final = 6070.0 / (30.86 - np.log(P_H2O_final))
+        
+        if T_d_solution < T_snow_final:
+            kappa_final = 450.0 * (T_d_solution / T_snow_final)**2 * r_gg
+        else:
+            kappa_final = 450.0 * r_gg
+            
+        tau_final = max(kappa_final * Sigma_g_final, 1e-10)
+        g_visc_4 = (3.0 / 8.0) * tau_final + 1.0 / (4.8 * tau_final)
+        
+        # 各成分を温度 [K] に換算
+        T_visc = ((Q_half / sigma_sb) * g_visc_4)**0.25
+        
+        derivative_term = 0.5 * s_const * (H_g_final / r) * (1.0 - q_guess)
+        F_in_final = 0.5 * (L_cp / (4.0 * np.pi * r**2)) * derivative_term
+        T_irr = (max(F_in_final, 0.0) / sigma_sb)**0.25
+        
+        T_sun = T_bg
+        
+        return T_d_solution, Sigma_g_final, T_visc, T_irr, T_sun
     
     return T_d_solution, Sigma_g_final
 
@@ -586,7 +617,7 @@ fixed_orbits = {
 }
 # 各衛星のデータを保存する辞書を作成
 fixed_histories = {
-    name: {'t': [], 'Td': [], 'T_snow': []} for name in fixed_orbits.keys()
+    name: {'t': [], 'Td': [], 'T_snow': [], 'T_visc': [], 'T_irr': [], 'T_sun': []} for name in fixed_orbits.keys()
 }
 
 history_disk_mass_t = []
@@ -622,8 +653,11 @@ while t_year <= t_max_year:
    # --- 変更: 4大衛星の固定軌道における温度成分を計算して記録 ---
     for name, r_fixed in fixed_orbits.items():
         p_fix, q_fix = calculate_p_q(M_cp_kg, M_dot_g_kg_s, r_fixed, alpha, r_gg, L_cp)
-        Td_fixed, Sigma_g_fixed = calculate_disk_structure(M_cp_kg, M_dot_g_kg_s, r_fixed, alpha, r_gg, L_cp, q_guess=q_fix)
-        
+        # ★ 変更: return_components=True で各成分を受け取る
+        Td_fixed, Sigma_g_fixed, T_visc_fix, T_irr_fix, T_sun_fix = calculate_disk_structure(
+            M_cp_kg, M_dot_g_kg_s, r_fixed, alpha, r_gg, L_cp, q_guess=q_fix, return_components=True
+        )
+
         if np.isnan(Td_fixed):
             continue
             
@@ -641,6 +675,9 @@ while t_year <= t_max_year:
         fixed_histories[name]['t'].append(t_year)
         fixed_histories[name]['Td'].append(Td_fixed)
         fixed_histories[name]['T_snow'].append(T_snow_val)
+        fixed_histories[name]['T_visc'].append(T_visc_fix)
+        fixed_histories[name]['T_irr'].append(T_irr_fix)
+        fixed_histories[name]['T_sun'].append(T_sun_fix)
 
     
 
@@ -653,7 +690,7 @@ while t_year <= t_max_year:
 
     # ★ 追加: ペブルの初期状態（円盤外縁）をセット
     current_pebble_r = 50.0 * R_J
-    current_pebble_Rd = 1e-2
+    current_pebble_Rd = 1e-2 #[cm]
     
     # --- ① 物理計算（外側から順番にペブルを横取りしていく） ---
     for sat in active_sats:
@@ -1419,3 +1456,30 @@ plt.grid(True, which="both", linestyle=":", alpha=0.7)
 plt.tight_layout()
 plt.savefig("pebble_radius_vs_r_central_flux.png")
 plt.close()
+
+# ==========================================
+# 追加: 固定軌道における加熱成分の比較（衛星ごとに個別保存）
+# ==========================================
+for name in fixed_orbits.keys():
+    hist = fixed_histories[name]
+    if len(hist['t']) == 0:
+        continue
+
+    plt.figure(figsize=(8, 5))
+    plt.plot(hist['t'], hist['Td'],     color='black',      linestyle='-',  linewidth=2.2, label='Total ($T_d$)')
+    plt.plot(hist['t'], hist['T_visc'], color='tab:red',    linestyle='--', linewidth=1.8, label='Viscous ($T_{visc}$)')
+    plt.plot(hist['t'], hist['T_irr'],  color='tab:blue',   linestyle='-.', linewidth=1.8, label='Jupiter Irrad. ($T_{irr}$)')
+    plt.plot(hist['t'], hist['T_sun'],  color='tab:orange', linestyle=':',  linewidth=1.8, label='Solar BG ($T_{sun}$)')
+    plt.plot(hist['t'], hist['T_snow'], color='tab:cyan',   linestyle=':',  linewidth=1.2, alpha=0.8, label='Snow Line ($T_{snow}$)')
+
+    plt.title(f"Heating Components at {name} Orbit ({fixed_orbits[name]/R_J:.2f} $R_J$)", fontsize=14)
+    plt.xlabel('Time [years]', fontsize=12)
+    plt.ylabel('Temperature [K]', fontsize=12)
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlim(1.0e6, 3.0e7)
+    plt.grid(True, which="both", linestyle=":", alpha=0.6)
+    plt.legend(fontsize=10, loc='lower left')
+    plt.tight_layout()
+    plt.savefig(f"heating_components_{name.lower()}.png")
+    plt.close()
